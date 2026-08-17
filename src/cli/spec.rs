@@ -30,6 +30,7 @@ pub(super) fn command() -> Command {
         .subcommand(update_command())
         .subcommand(status_command())
         .subcommand(config_command())
+        .subcommand(connection_command())
         .subcommand(channel_command())
         .subcommand(server_command())
         .subcommand(api_command())
@@ -144,6 +145,34 @@ fn config_command() -> Command {
         .about("Manage local configuration")
         .subcommand(Command::new("check").about("Validate config.toml and print diagnostics"))
         .subcommand(Command::new("reset-keys").about("Reset custom keybindings"))
+}
+
+fn connection_command() -> Command {
+    Command::new("connection")
+        .about("Choose which local or SSH server this client attaches to")
+        .subcommand(Command::new("list").about("Show saved destinations and the active one"))
+        .subcommand(
+            Command::new("add")
+                .about("Save an SSH destination and make it active")
+                .arg(Arg::new("name").value_name("NAME").required(true))
+                .arg(Arg::new("target").value_name("SSH_TARGET").required(true)),
+        )
+        .subcommand(
+            Command::new("use")
+                .about("Attach to this destination from now on")
+                .arg(Arg::new("name").value_name("NAME").required(true)),
+        )
+        .subcommand(
+            Command::new("rename")
+                .about("Rename a saved destination")
+                .arg(Arg::new("name").value_name("NAME").required(true))
+                .arg(Arg::new("new-name").value_name("NEW_NAME").required(true)),
+        )
+        .subcommand(
+            Command::new("remove")
+                .about("Forget a saved destination")
+                .arg(Arg::new("name").value_name("NAME").required(true)),
+        )
 }
 
 fn channel_command() -> Command {

@@ -628,6 +628,7 @@ fn main() -> io::Result<()> {
         println!("       herdr api <subcommand> ...");
         println!("       herdr completion <shell>");
         println!("       herdr config <subcommand> ...");
+        println!("       herdr connection <subcommand> ...");
         println!("       herdr channel <subcommand> ...");
         println!("       herdr workspace <subcommand> ...");
         println!("       herdr worktree <subcommand> ...");
@@ -662,6 +663,10 @@ fn main() -> io::Result<()> {
             (
                 "herdr config reset-keys",
                 "Back up config.toml and remove custom keybindings",
+            ),
+            (
+                "herdr connection <subcommand>",
+                "Choose the local or SSH server this client attaches to",
             ),
             (
                 "herdr channel <subcommand>",
@@ -771,6 +776,7 @@ fn main() -> io::Result<()> {
                 "update",
                 "status",
                 "config",
+                "connection",
                 "channel",
                 "workspace",
                 "worktree",
