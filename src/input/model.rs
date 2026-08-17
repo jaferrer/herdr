@@ -217,9 +217,22 @@ pub(crate) const KITTY_FLAG_REPORT_ALL_KEYS: u16 = 0b0000_1000;
 
 #[cfg(not(windows))]
 pub fn ime_compatible_keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
-    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+    // crossterm 0.29 does not expose REPORT_ASSOCIATED_TEXT (bit 4) as a named
+    // constant, but the kitty protocol defines it and Ghostty honours it. Setting
+    // it makes the terminal send the composed character (e.g. "á") as the
+    // associated-text field of CSI u sequences for dead-key accents, which the
+    // parser turns into `generated_text` so the pane receives the right bytes.
+    // Terminals that ignore the flag (e.g. WezTerm) are unaffected: they keep
+    // delivering composed characters as plain UTF-8, which already works.
+    let mut flags = KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
         | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS;
+    // crossterm 0.29 does not define REPORT_ASSOCIATED_TEXT (bit 4) as a named
+    // constant, so from_bits_truncate would discard it. Use from_bits_retain
+    // (bitflags 2.x) to preserve the bit; the kitty protocol defines it and
+    // Ghostty honours it.
+    flags = KeyboardEnhancementFlags::from_bits_retain(flags.bits() | 0b0001_0000);
+    flags
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -429,6 +442,8 @@ mod tests {
         assert!(flags.contains(KeyboardEnhancementFlags::REPORT_EVENT_TYPES));
         assert!(flags.contains(KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS));
         assert!(!flags.contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES));
+        // REPORT_ASSOCIATED_TEXT (bit 4) is set for dead-key accent support.
+        assert!(flags.bits() & 0b0001_0000 != 0);
     }
 
     #[test]

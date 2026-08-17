@@ -697,6 +697,13 @@ mod tests {
     }
 
     #[test]
+    fn parse_kitty_sequence_with_dead_key_text() {
+        let key = parse_terminal_key_sequence("\x1b[97;1;225u").unwrap();
+        assert_eq!(key.code, KeyCode::Char('a'));
+        assert_eq!(key.generated_text.as_deref(), Some("á"));
+    }
+
+    #[test]
     fn reject_malformed_kitty_associated_text() {
         assert_eq!(parse_terminal_key_sequence("\x1b[32;;1114112u"), None);
         assert_eq!(parse_terminal_key_sequence("\x1b[32;;20320:bad:u"), None);
