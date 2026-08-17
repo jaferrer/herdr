@@ -1,10 +1,24 @@
 mod attach;
 #[cfg(unix)]
 mod host_unix;
+pub(crate) mod profiles;
 
 pub(crate) use attach::*;
 #[cfg(unix)]
 pub(crate) use host_unix::run_remote_client_bridge;
+
+/// Resolves the destination this client attaches to.
+///
+/// An explicit `--remote` always wins: a saved profile is a default, never an
+/// override of what the user just typed. `None` means the local server.
+pub(crate) fn launch_for_active_profile(explicit: Option<RemoteLaunch>) -> Option<RemoteLaunch> {
+    if explicit.is_some() {
+        return explicit;
+    }
+    let profiles = profiles::RemoteProfiles::load();
+    let target = profiles.active_target()?;
+    Some(RemoteLaunch::for_target(target.to_string()))
+}
 
 #[cfg(windows)]
 pub(crate) fn run_remote_client_bridge() -> std::io::Result<()> {
@@ -56,6 +70,15 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_explicit_remote_flag_wins_over_a_saved_profile() {
+        let explicit = RemoteLaunch::for_target("typed-host".to_string());
+
+        let resolved = launch_for_active_profile(Some(explicit.clone()));
+
+        assert_eq!(resolved, Some(explicit));
+    }
 
     #[test]
     fn remote_auth_error_matches_ssh_auth_denied() {

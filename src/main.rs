@@ -790,7 +790,9 @@ fn main() -> io::Result<()> {
         }
     }
 
-    if let Some(remote_launch) = remote_launch {
+    // A saved profile only steers the *default* launch: subcommands and flag
+    // paths above have already returned, so this cannot hijack them.
+    if let Some(remote_launch) = remote::launch_for_active_profile(remote_launch) {
         let remote_target = remote_launch.target.clone();
         if let Err(err) = remote::run_remote(remote_launch) {
             eprintln!("error: {err}");
