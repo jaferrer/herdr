@@ -5,6 +5,7 @@ use ratatui::{
     Frame,
 };
 
+mod connection_picker;
 mod dialogs;
 mod keybind_help;
 mod menus;
@@ -465,6 +466,9 @@ pub fn render_with_runtime_registry(
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
         Mode::OverviewGrid => {
             overview_grid::render_overview_grid(app, terminal_runtimes, frame, terminal_area)
+        }
+        Mode::ConnectionPicker => {
+            connection_picker::render_connection_picker(app, frame, frame.area())
         }
         Mode::Terminal => {}
     }

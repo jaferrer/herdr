@@ -80,6 +80,7 @@ pub(crate) enum GlobalMenuAction {
     ReloadConfig,
     Settings,
     Overview,
+    Connections,
 }
 
 pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
@@ -93,6 +94,7 @@ pub(super) fn global_menu_actions(state: &AppState) -> Vec<GlobalMenuAction> {
     if state.view.layout != crate::app::state::ViewLayout::Mobile {
         actions.push(GlobalMenuAction::Overview);
     }
+    actions.push(GlobalMenuAction::Connections);
     if state.update_available.is_some() || state.latest_release_notes_available {
         actions.push(GlobalMenuAction::WhatsNew);
     }
@@ -148,6 +150,7 @@ pub(super) fn apply_global_menu_action(state: &mut AppState, action: GlobalMenuA
         }
         GlobalMenuAction::Settings => super::settings::open_settings(state),
         GlobalMenuAction::Overview => state.open_overview_grid_at_current(),
+        GlobalMenuAction::Connections => state.open_connection_picker(),
     }
 }
 
