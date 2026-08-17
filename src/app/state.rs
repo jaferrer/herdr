@@ -844,11 +844,19 @@ pub enum Mode {
     GlobalMenu,
     KeybindHelp,
     Navigator,
+    OverviewGrid,
 }
 
 impl Mode {
     pub(crate) fn mouse_motion_changes_view(self) -> bool {
         matches!(self, Self::GlobalMenu | Self::ContextMenu | Self::Navigator)
+    }
+
+    /// Whether this mode draws instead of the terminal surface rather than on
+    /// top of it. The grid replaces the whole terminal area, so panes below it
+    /// are neither drawn nor clickable.
+    pub(crate) fn replaces_terminal_surface(self) -> bool {
+        matches!(self, Self::OverviewGrid)
     }
 
     /// Whether keys in this mode are commands/navigation (an ASCII input source is wanted) rather
@@ -874,6 +882,7 @@ impl Mode {
                 | Mode::ContextMenu
                 | Mode::GlobalMenu
                 | Mode::KeybindHelp
+                | Mode::OverviewGrid
         )
     }
 }
@@ -1421,6 +1430,9 @@ pub struct AppState {
     pub product_announcement: Option<ProductAnnouncementState>,
     pub keybind_help: KeybindHelpState,
     pub navigator: NavigatorState,
+    /// Selection index into the overview grid's cells. Presentation only: the
+    /// cells themselves are derived from the workspaces on every render.
+    pub overview_grid_selected: usize,
     pub copy_mode: Option<CopyModeState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
@@ -1786,6 +1798,7 @@ impl AppState {
             product_announcement: None,
             keybind_help: KeybindHelpState::default(),
             navigator: NavigatorState::default(),
+            overview_grid_selected: 0,
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,

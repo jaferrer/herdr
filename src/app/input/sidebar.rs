@@ -198,6 +198,10 @@ impl AppState {
 
     pub(crate) fn global_menu_labels(&self) -> Vec<&'static str> {
         let mut labels = vec!["settings", "keybinds", "reload config"];
+        // Mirrors `global_menu_actions`: the grid is desktop-only.
+        if self.view.layout != crate::app::state::ViewLayout::Mobile {
+            labels.push("overview");
+        }
         if self.update_available.is_some() {
             labels.push("update ready");
         } else if self.latest_release_notes_available {
@@ -646,6 +650,7 @@ mod tests {
                 "settings",
                 "keybinds",
                 "reload config",
+                "overview",
                 "update ready",
                 "detach"
             ]
@@ -667,14 +672,20 @@ mod tests {
 
         assert_eq!(
             app.state.global_menu_labels(),
-            vec!["settings", "keybinds", "reload config", "detach"]
+            vec![
+                "settings",
+                "keybinds",
+                "reload config",
+                "overview",
+                "detach"
+            ]
         );
 
         let menu = app.state.global_menu_rect();
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 4,
+            menu.y + 5,
         ));
 
         assert!(app.state.detach_requested);
@@ -693,6 +704,7 @@ mod tests {
                 "settings",
                 "keybinds",
                 "reload config",
+                "overview",
                 "what's new",
                 "detach"
             ]

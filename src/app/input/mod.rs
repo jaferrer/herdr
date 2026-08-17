@@ -43,6 +43,7 @@ mod modal;
 mod mouse;
 mod navigate;
 mod overlays;
+mod overview_grid;
 mod selection;
 mod settings;
 mod sidebar;
@@ -116,6 +117,9 @@ impl App {
                 Mode::KeybindHelp => handle_keybind_help_key(&mut self.state, key),
                 Mode::Navigator => {
                     handle_navigator_key(&mut self.state, &self.terminal_runtimes, key_event)
+                }
+                Mode::OverviewGrid => {
+                    self.state.handle_overview_grid_key(key_event);
                 }
                 Mode::Terminal => unreachable!(),
             },
