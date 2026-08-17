@@ -13,6 +13,7 @@ mod api;
 mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod config_io;
+pub(crate) mod connection_picker;
 mod creation;
 mod git_refresh;
 mod ids;
@@ -582,6 +583,7 @@ impl App {
             keybind_help: state::KeybindHelpState::default(),
             navigator: state::NavigatorState::default(),
             overview_grid_selected: 0,
+            connection_picker: Default::default(),
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
@@ -1944,6 +1946,9 @@ impl App {
             }
             Mode::OverviewGrid => {
                 self.state.handle_overview_grid_key(key_event);
+            }
+            Mode::ConnectionPicker => {
+                self.state.handle_connection_picker_key(key_event);
             }
             Mode::Terminal => {
                 // Should not be called in terminal mode.

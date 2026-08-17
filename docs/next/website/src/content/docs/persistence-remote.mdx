@@ -48,6 +48,12 @@ In this mode, your local Herdr is a thin client. It connects over SSH, starts or
 
 By default, `herdr --remote` uses your local Herdr keybindings for that attach. This keeps local muscle memory even when the remote server has different config. The local keybindings are a snapshot from attach time; detach and reattach after editing local keybindings. Use `--remote-keybindings server` when you want the remote server config instead. Local custom command keybindings are not sent, because those commands would run on the remote host.
 
+Saved destinations also live in the app: open the global menu and pick
+`connections` to switch between the local server and saved SSH destinations, or
+add one with `+ ssh`. Choosing a different destination detaches the client so it
+comes back attached there; the panes on the machine you leave keep running.
+`herdr connection list|add|use|rename|remove` does the same from a shell.
+
 For repeat targets, use your SSH config:
 
 ```text

@@ -1427,7 +1427,15 @@ mod tests {
             agent_hit,
             Some(MobileSwitcherTarget::Agent { .. })
         ));
-        let workspace_hit = mobile_switcher_target_at(&app, viewport.x + 2, viewport.y + 7);
+        // An out-of-range scroll clamps, so the workspace ribbon's screen row is
+        // its doc row minus the clamped offset. Deriving it keeps this about
+        // ordering rather than the exact number of menu entries below.
+        let clamped = app
+            .mobile_switcher_scroll
+            .min(mobile_switcher_max_scroll(&app));
+        let doc_row = mobile_switcher_workspace_doc_range(&app, 0).start;
+        let screen_row = viewport.y + (doc_row - clamped) as u16;
+        let workspace_hit = mobile_switcher_target_at(&app, viewport.x + 2, screen_row);
         assert_eq!(workspace_hit, Some(MobileSwitcherTarget::Workspace(0)));
     }
 

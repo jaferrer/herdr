@@ -37,6 +37,7 @@ fn modified_url_click_modifier_matches_terminal_mouse_reporting() {
 }
 
 mod clipboard;
+mod connection_picker;
 mod copy_mode;
 mod lease;
 mod modal;
@@ -120,6 +121,9 @@ impl App {
                 }
                 Mode::OverviewGrid => {
                     self.state.handle_overview_grid_key(key_event);
+                }
+                Mode::ConnectionPicker => {
+                    self.state.handle_connection_picker_key(key_event);
                 }
                 Mode::Terminal => unreachable!(),
             },
@@ -221,6 +225,7 @@ impl App {
                 self.insert_worktree_create_text(text);
                 true
             }
+            Mode::ConnectionPicker => self.state.insert_connection_add_text(text),
             Mode::OpenExistingWorktree => {
                 if !self
                     .state
@@ -726,6 +731,8 @@ pub(crate) fn modal_paste_target_active(state: &AppState) -> bool {
             .is_some_and(|open| open.search_focused),
         Mode::Navigator => state.navigator.search_focused,
         Mode::KeybindHelp => state.keybind_help.search_focused,
+        // Pasting a `user@host` is the common way to fill this in.
+        Mode::ConnectionPicker => state.connection_picker.adding.is_some(),
         Mode::Copy => state
             .copy_mode
             .as_ref()

@@ -845,6 +845,7 @@ pub enum Mode {
     KeybindHelp,
     Navigator,
     OverviewGrid,
+    ConnectionPicker,
 }
 
 impl Mode {
@@ -883,6 +884,7 @@ impl Mode {
                 | Mode::GlobalMenu
                 | Mode::KeybindHelp
                 | Mode::OverviewGrid
+                | Mode::ConnectionPicker
         )
     }
 }
@@ -1433,6 +1435,8 @@ pub struct AppState {
     /// Selection index into the overview grid's cells. Presentation only: the
     /// cells themselves are derived from the workspaces on every render.
     pub overview_grid_selected: usize,
+    /// Local/SSH destination picker. Client-side only.
+    pub connection_picker: crate::app::connection_picker::ConnectionPickerState,
     pub copy_mode: Option<CopyModeState>,
     pub workspace_scroll: usize,
     pub agent_panel_scroll: usize,
@@ -1799,6 +1803,7 @@ impl AppState {
             keybind_help: KeybindHelpState::default(),
             navigator: NavigatorState::default(),
             overview_grid_selected: 0,
+            connection_picker: Default::default(),
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,

@@ -4,7 +4,7 @@
 
 ### Added
 - Added an overview grid of every open session, opened with `prefix+a` or from the global menu. Cells show the workspace, tab, agent, and status; arrows, Tab, and Enter move focus, and Esc returns to the terminal.
-- Added `herdr connection` and client-local Local/SSH destination profiles. A bare `herdr` attaches to the active destination; `--remote` still overrides it, and passwords are never stored.
+- Added a connections picker to the global menu for choosing the Local or SSH destination and adding one with `+ ssh`, plus `herdr connection` and client-local Local/SSH destination profiles. A bare `herdr` attaches to the active destination; `--remote` still overrides it, and passwords are never stored.
 - CLI help now points coding agents to Herdr's plain-text guide, documentation index, and built-in control skill.
 - Added Qwen Code detection for idle, working, and user-confirmation states, plus optional native session restore.
 - Herdr now keeps the outer terminal window title in sync with the session through `ui.window_title`, so window managers and terminal tab bars show the active workspace and the host the panes actually run on.

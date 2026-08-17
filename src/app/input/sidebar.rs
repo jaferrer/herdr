@@ -202,6 +202,7 @@ impl AppState {
         if self.view.layout != crate::app::state::ViewLayout::Mobile {
             labels.push("overview");
         }
+        labels.push("connections");
         if self.update_available.is_some() {
             labels.push("update ready");
         } else if self.latest_release_notes_available {
@@ -651,6 +652,7 @@ mod tests {
                 "keybinds",
                 "reload config",
                 "overview",
+                "connections",
                 "update ready",
                 "detach"
             ]
@@ -677,6 +679,7 @@ mod tests {
                 "keybinds",
                 "reload config",
                 "overview",
+                "connections",
                 "detach"
             ]
         );
@@ -685,7 +688,7 @@ mod tests {
         app.handle_mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             menu.x + 2,
-            menu.y + 5,
+            menu.y + 6,
         ));
 
         assert!(app.state.detach_requested);
@@ -705,6 +708,7 @@ mod tests {
                 "keybinds",
                 "reload config",
                 "overview",
+                "connections",
                 "what's new",
                 "detach"
             ]
