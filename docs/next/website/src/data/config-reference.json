@@ -308,6 +308,12 @@
           "description": "Open the session navigator."
         },
         {
+          "key": "keys.overview",
+          "type": "keybinding",
+          "default": "\"prefix+a\"",
+          "description": "Open the overview grid of open sessions."
+        },
+        {
           "key": "keys.navigate_workspace_up",
           "type": "keybinding",
           "default": "\"up\"",

@@ -446,6 +446,7 @@ impl App {
             NavigateAction::OpenNavigator => {
                 self.state.open_navigator_from(&self.terminal_runtimes)
             }
+            NavigateAction::OpenOverviewGrid => self.state.open_overview_grid_at_current(),
         }
 
         finish_action_context(&mut self.state, context, previous_mode);
@@ -1431,6 +1432,7 @@ pub(crate) enum NavigateAction {
     OpenNotificationTarget,
     Detach,
     OpenNavigator,
+    OpenOverviewGrid,
 }
 
 fn copy_mode_survives_prefix_action(action: NavigateAction) -> bool {
@@ -1579,6 +1581,7 @@ fn non_indexed_action_for_key(
         ),
         (&kb.detach, NavigateAction::Detach),
         (&kb.goto, NavigateAction::OpenNavigator),
+        (&kb.overview, NavigateAction::OpenOverviewGrid),
     ] {
         if action_matches(bindings, key, dispatch) {
             return Some(action);
@@ -1859,6 +1862,7 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::OpenNavigator => state.open_navigator_from(terminal_runtimes),
+        NavigateAction::OpenOverviewGrid => state.open_overview_grid_at_current(),
     }
 
     finish_action_context(state, context, previous_mode);
