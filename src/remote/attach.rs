@@ -65,6 +65,17 @@ pub(crate) struct RemoteLaunch {
     pub(crate) live_handoff: bool,
 }
 
+impl RemoteLaunch {
+    /// A profile-driven attach: same defaults as a bare `herdr --remote <target>`.
+    pub(crate) fn for_target(target: String) -> Self {
+        Self {
+            target,
+            keybindings: RemoteKeybindings::Local,
+            live_handoff: false,
+        }
+    }
+}
+
 pub(crate) fn extract_remote_args(
     args: &[String],
 ) -> Result<(Vec<String>, Option<RemoteLaunch>), String> {
