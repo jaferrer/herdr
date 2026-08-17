@@ -80,11 +80,25 @@ pub(super) fn render_overview_grid(
     let rects = cell_rects(cells.len(), area);
     for (idx, rect) in rects.iter().enumerate() {
         let Some(cell) = cells.get(idx) else { continue };
-        render_cell(app, frame, *rect, cell, idx == app.overview_grid_selected);
+        render_cell(
+            app,
+            terminal_runtimes,
+            frame,
+            *rect,
+            cell,
+            idx == app.overview_grid_selected,
+        );
     }
 }
 
-fn render_cell(app: &AppState, frame: &mut Frame, area: Rect, cell: &OverviewCell, selected: bool) {
+fn render_cell(
+    app: &AppState,
+    terminal_runtimes: &TerminalRuntimeRegistry,
+    frame: &mut Frame,
+    area: Rect,
+    cell: &OverviewCell,
+    selected: bool,
+) {
     let p = &app.palette;
     let border_color = if selected {
         p.accent
@@ -94,6 +108,10 @@ fn render_cell(app: &AppState, frame: &mut Frame, area: Rect, cell: &OverviewCel
         p.surface1
     };
 
+    let title = match &cell.agent_label {
+        Some(agent) => format!(" {} · {} ", cell.tab_label, agent),
+        None => format!(" {} ", cell.tab_label),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(if selected {
@@ -101,50 +119,41 @@ fn render_cell(app: &AppState, frame: &mut Frame, area: Rect, cell: &OverviewCel
         } else {
             BorderType::Plain
         })
-        .border_style(Style::default().fg(border_color));
+        .border_style(Style::default().fg(border_color))
+        .title(Span::styled(title, Style::default().fg(p.text)));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.width == 0 || inner.height == 0 {
         return;
     }
 
-    let mut lines = vec![Line::from(vec![
-        {
-            let (symbol, style) = state_icon(cell.state, cell.seen, app.status_indicators, p);
-            Span::styled(format!("{symbol} "), style)
-        },
-        Span::styled(
-            truncate_end(
-                &cell.workspace_label,
-                inner.width.saturating_sub(2) as usize,
-            ),
-            Style::default().fg(p.text).add_modifier(if selected {
-                Modifier::BOLD
-            } else {
-                Modifier::empty()
-            }),
+    if let Some(ws) = app.workspaces.get(cell.ws_idx) {
+        if let Some(tab) = ws.tabs.get(cell.tab_idx) {
+            if let Some(terminal_id) = tab.terminal_id(cell.pane_id) {
+                if let Some(runtime) = terminal_runtimes.get(terminal_id) {
+                    runtime.render(frame, inner, false);
+                    return;
+                }
+            }
+        }
+    }
+
+    let (symbol, style) = state_icon(cell.state, cell.seen, app.status_indicators, p);
+    let status = format!(
+        "{symbol} {} · {}",
+        truncate_end(
+            &cell.workspace_label,
+            inner.width.saturating_sub(2) as usize
         ),
-    ])];
-
-    if inner.height > 1 {
-        let detail = match &cell.agent_label {
-            Some(agent) => format!("{} · {}", cell.tab_label, agent),
-            None => cell.tab_label.clone(),
-        };
-        lines.push(Line::from(Span::styled(
-            truncate_end(&detail, inner.width as usize),
-            Style::default().fg(p.overlay1),
-        )));
-    }
-
-    if inner.height > 2 {
-        lines.push(Line::from(Span::styled(
-            truncate_end(state_label(cell.state, cell.seen), inner.width as usize),
-            Style::default().fg(state_label_color(cell.state, cell.seen, p)),
-        )));
-    }
-
-    frame.render_widget(Paragraph::new(lines), inner);
+        state_label(cell.state, cell.seen)
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            truncate_end(&status, inner.width as usize),
+            style.fg(state_label_color(cell.state, cell.seen, p)),
+        ))),
+        inner,
+    );
 }
 
 #[cfg(test)]
