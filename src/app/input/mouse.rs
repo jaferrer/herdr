@@ -127,6 +127,13 @@ impl AppState {
             return self.handle_settings_mouse(mouse).map(MouseAction::Settings);
         }
 
+        // The grid covers the terminal surface, so it swallows every event:
+        // a click that misses a cell must not reach the panes underneath.
+        if self.mode == Mode::OverviewGrid {
+            self.handle_overview_grid_mouse(mouse);
+            return None;
+        }
+
         let launcher_enabled = self.view.layout != ViewLayout::Mobile
             && !self.sidebar_collapsed
             && matches!(

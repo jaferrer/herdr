@@ -1409,6 +1409,9 @@ mod tests {
         }
         app.active = Some(0);
         app.selected = 0;
+        // The mobile switcher only exists in the mobile layout, and the menu it
+        // lists is layout-dependent, so the test state must say so.
+        app.view.layout = crate::app::state::ViewLayout::Mobile;
         app.view.mobile_header_rect = Rect::new(0, 0, 40, 2);
         app.view.terminal_area = Rect::new(0, 2, 40, 18);
 
@@ -1450,6 +1453,9 @@ mod tests {
         ];
         app.active = Some(0);
         app.selected = 0;
+        // The mobile switcher only exists in the mobile layout, and the menu it
+        // lists is layout-dependent, so the test state must say so.
+        app.view.layout = crate::app::state::ViewLayout::Mobile;
         app.view.mobile_header_rect = Rect::new(0, 0, 40, 2);
         app.view.terminal_area = Rect::new(0, 2, 40, 18);
 
@@ -1520,6 +1526,9 @@ mod tests {
         app.ensure_test_terminals();
         app.active = Some(0);
         app.selected = 0;
+        // The mobile switcher only exists in the mobile layout, and the menu it
+        // lists is layout-dependent, so the test state must say so.
+        app.view.layout = crate::app::state::ViewLayout::Mobile;
         app.view.mobile_header_rect = Rect::new(0, 0, 40, 2);
         app.view.terminal_area = Rect::new(0, 2, 40, 18);
 

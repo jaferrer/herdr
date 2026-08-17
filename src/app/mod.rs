@@ -17,6 +17,7 @@ mod creation;
 mod git_refresh;
 mod ids;
 mod input;
+pub(crate) mod overview_grid;
 pub(crate) mod pane_graphics;
 mod popup;
 mod runtime;
@@ -583,6 +584,7 @@ impl App {
             }),
             keybind_help: state::KeybindHelpState::default(),
             navigator: state::NavigatorState::default(),
+            overview_grid_selected: 0,
             copy_mode: None,
             workspace_scroll: 0,
             agent_panel_scroll: 0,
@@ -1945,6 +1947,9 @@ impl App {
             }
             Mode::Navigator => {
                 input::handle_navigator_key(&mut self.state, &self.terminal_runtimes, key_event);
+            }
+            Mode::OverviewGrid => {
+                self.state.handle_overview_grid_key(key_event);
             }
             Mode::Terminal => {
                 // Should not be called in terminal mode.

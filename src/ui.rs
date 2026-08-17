@@ -11,11 +11,12 @@ mod menus;
 mod mobile;
 mod navigator;
 mod onboarding;
+pub(crate) mod overview_grid;
 mod panes;
 mod release_notes;
 mod scrollbar;
 mod settings;
-mod sidebar;
+pub(crate) mod sidebar;
 mod status;
 mod tab_surface;
 mod tabs;
@@ -405,7 +406,12 @@ pub fn render_with_runtime_registry(
     if app.view.layout != ViewLayout::Mobile {
         render_tab_bar(app, frame, tab_bar_area);
     }
-    if app
+    // The grid replaces the terminal surface rather than floating over it, so
+    // the panes underneath are not drawn at all: no wasted paint, and nothing
+    // showing through the gaps between cells.
+    if app.mode.replaces_terminal_surface() {
+        // nothing to draw here; the mode's own renderer owns this area
+    } else if app
         .active
         .and_then(|ws_idx| app.workspaces.get(ws_idx))
         .is_some()
@@ -457,6 +463,9 @@ pub fn render_with_runtime_registry(
         Mode::GlobalMenu => render_global_launcher_menu(app, frame),
         Mode::KeybindHelp => render_keybind_help_overlay(app, frame),
         Mode::Navigator => render_navigator_overlay(app, terminal_runtimes, frame),
+        Mode::OverviewGrid => {
+            overview_grid::render_overview_grid(app, terminal_runtimes, frame, terminal_area)
+        }
         Mode::Terminal => {}
     }
 }
