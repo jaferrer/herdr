@@ -436,6 +436,18 @@ impl App {
                 max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
                 viewport_rows: metrics.viewport_rows as u64,
             });
+        let cursor = self
+            .state
+            .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
+            .and_then(|runtime| {
+                runtime.cursor_state(ratatui::layout::Rect::new(0, 0, u16::MAX, u16::MAX), true)
+            })
+            .map(|cursor| crate::api::schema::PaneCursorInfo {
+                x: cursor.x,
+                y: cursor.y,
+                visible: cursor.visible,
+                shape: cursor.shape,
+            });
         let focused = self.state.active == Some(ws_idx)
             && ws.active_tab == tab_idx
             && ws
@@ -465,6 +477,7 @@ impl App {
             tokens: terminal.metadata_tokens.values(),
             agent_session: terminal_agent_session_info(terminal),
             scroll,
+            cursor,
             revision: terminal.revision,
         })
     }

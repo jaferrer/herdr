@@ -476,7 +476,22 @@ pub struct PaneInfo {
     pub agent_session: Option<AgentSessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<PaneScrollInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<PaneCursorInfo>,
     pub revision: u64,
+}
+
+/// Cursor position and presentation within the pane's terminal grid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct PaneCursorInfo {
+    /// Column offset, zero-based.
+    pub x: u16,
+    /// Row offset, zero-based.
+    pub y: u16,
+    pub visible: bool,
+    /// DECSCUSR shape parameter: 0 default, 1-6 explicit shape.
+    #[serde(default)]
+    pub shape: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
