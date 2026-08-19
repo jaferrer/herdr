@@ -2127,12 +2127,26 @@ impl GhosttyPaneTerminal {
             Ok(cells) => cells,
             Err(_) => return,
         };
+        // When the target area is shorter than the pane's own screen (e.g. an
+        // overview grid cell rendering a full-size pane into a small box),
+        // skip to the bottom rows instead of always showing the frozen top:
+        // that keeps live output and scrolling visible at a glance.
+        let skip_rows = render_state
+            .rows()
+            .ok()
+            .map(|rows| rows.saturating_sub(area.height))
+            .unwrap_or(0);
         {
             let buf = frame.buffer_mut();
             let mut rows = match render_state.populate_row_iterator(&mut row_iterator) {
                 Ok(rows) => rows,
                 Err(_) => return,
             };
+            for _ in 0..skip_rows {
+                if !rows.next() {
+                    break;
+                }
+            }
             let mut grapheme_bytes = Vec::new();
             let mut symbol_scratch = String::new();
             let mut y = 0u16;
@@ -2189,7 +2203,7 @@ impl GhosttyPaneTerminal {
             }
         }
 
-        ghostty_clear_render_dirty(render_state, area.height);
+        ghostty_clear_render_dirty(render_state, skip_rows, area.height);
 
         let current_cursor = cursor_state_from_render_state(render_state, decscusr_tracker);
         if show_cursor {
@@ -2301,13 +2315,22 @@ fn cursor_state_from_render_state(
 
 type VisibleHyperlinks = Vec<((u16, u16), String, String)>;
 
-fn ghostty_clear_render_dirty(render_state: &mut crate::ghostty::RenderState, area_height: u16) {
+fn ghostty_clear_render_dirty(
+    render_state: &mut crate::ghostty::RenderState,
+    skip_rows: u16,
+    area_height: u16,
+) {
     let Ok(mut row_iterator) = crate::ghostty::RowIterator::new() else {
         return;
     };
     let Ok(mut rows) = render_state.populate_row_iterator(&mut row_iterator) else {
         return;
     };
+    for _ in 0..skip_rows {
+        if !rows.next() {
+            return;
+        }
+    }
     let mut y = 0u16;
     while y < area_height && rows.next() {
         let _ = rows.clear_dirty();
@@ -5459,6 +5482,42 @@ mod tests {
         let buffer = terminal.backend().buffer();
         let row = (0..16).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
         assert_eq!(row, "restored history");
+    }
+
+    #[test]
+    fn render_into_a_shorter_area_shows_the_bottom_rows_not_the_frozen_top() {
+        let (tx, _rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(20, 10, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        for line in 0..10 {
+            pane.process_pty_bytes(
+                PaneId::from_raw(1),
+                0,
+                format!("line{line}\r\n").as_bytes(),
+                &tx,
+            );
+        }
+
+        // Render into an area much shorter than the pane's real 10 rows, as
+        // an overview grid cell would: it should show the bottom (most
+        // recent) rows, not rows 0..height from the frozen top.
+        let backend = ratatui::backend::TestBackend::new(20, 3);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| pane.render(frame, Rect::new(0, 0, 20, 3), false))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let text = (0..3)
+            .map(|y| {
+                (0..20)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("line9"), "expected bottom rows: {text:?}");
+        assert!(!text.contains("line0"), "should not show top rows: {text:?}");
     }
 
     #[test]

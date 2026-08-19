@@ -42,6 +42,7 @@
 - Experimental pane graphics now support bounded named layers, acknowledged full-RGBA primary-layer direct file frames on audited local terminals, owned BGRA fallback, exact pixel mouse input, and placement-only resize replay.
 
 ### Fixed
+- The overview grid now bottom-anchors each session thumbnail to its most recent rows instead of freezing on the top of the pane's full terminal buffer, so live scrolling output is visible at a glance.
 - Live handoff now preserves mouse forwarding for running pane applications. (#3000, thanks @xkrogen)
 - Unix CLI commands now exit quietly when a downstream pipe closes instead of panicking with exit 101. (#2994)
 - The terminal theme now keeps the active Space row fill visible when the Navigate cursor lands on it, in both expanded and collapsed sidebars. (#2987)
