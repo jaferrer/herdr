@@ -1753,6 +1753,7 @@ impl AppState {
 
         let layout = crate::ui::compute_tab_bar_view(
             ws,
+            &self.terminals,
             crate::ui::tab_bar_content_area(self, area),
             self.tab_scroll,
             self.tab_scroll_follow_active,
@@ -2842,15 +2843,23 @@ impl AppState {
                 seq,
                 session_ref,
                 session_start_source,
+                agent_session_name,
+                agent_session_icon,
             } => self
                 .update_terminal_state(pane_id, |terminal| {
-                    terminal.set_agent_session_ref_for_session_start(
+                    let mutation = terminal.set_agent_session_ref_for_session_start(
                         source,
                         agent_label,
                         session_ref,
                         seq,
                         session_start_source,
-                    )
+                    );
+                    if mutation.is_some()
+                        && (agent_session_name.is_some() || agent_session_icon.is_some())
+                    {
+                        terminal.set_agent_session_display(agent_session_name, agent_session_icon);
+                    }
+                    mutation
                 })
                 .into_iter()
                 .collect(),

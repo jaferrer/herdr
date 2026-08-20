@@ -128,6 +128,11 @@ pub struct TerminalState {
     pub agent_metadata: HashMap<String, AgentMetadata>,
     pub metadata_tokens: crate::metadata_tokens::MetadataTokens,
     pub persisted_agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+    /// Display-only name/icon reported alongside the current hook-authoritative
+    /// session (e.g. jcode's memorable session name and emoji icon). Cleared
+    /// whenever `hook_authority`/`persisted_agent_session` are cleared.
+    pub agent_session_display_name: Option<String>,
+    pub agent_session_display_icon: Option<String>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     pub agent_name: Option<String>,
@@ -162,6 +167,8 @@ impl TerminalState {
             agent_metadata: HashMap::new(),
             metadata_tokens: crate::metadata_tokens::MetadataTokens::default(),
             persisted_agent_session: None,
+            agent_session_display_name: None,
+            agent_session_display_icon: None,
             terminal_title: None,
             manual_label: None,
             agent_name: None,
@@ -497,6 +504,8 @@ impl TerminalState {
             if let Some(source) = cleared_hook_source {
                 self.hook_report_sequences.remove(&source);
                 self.hook_authority = None;
+                self.agent_session_display_name = None;
+                self.agent_session_display_icon = None;
             }
             if !newer_custom_authority
                 && self
@@ -1377,6 +1386,19 @@ impl TerminalState {
         self.set_agent_session_ref_for_session_start(source, agent_label, session_ref, seq, None)
     }
 
+    /// Display-only name/icon reported alongside a session identity report
+    /// (e.g. jcode's memorable session name and emoji icon). Independent of
+    /// the hook-authority arbitration below; cleared wherever hook authority
+    /// and persisted session identity are cleared.
+    pub fn set_agent_session_display(&mut self, name: Option<String>, icon: Option<String>) {
+        if name.is_some() {
+            self.agent_session_display_name = name;
+        }
+        if icon.is_some() {
+            self.agent_session_display_icon = icon;
+        }
+    }
+
     pub fn set_agent_session_ref_for_session_start(
         &mut self,
         source: String,
@@ -1710,6 +1732,8 @@ impl TerminalState {
         );
         self.hook_authority = None;
         self.persisted_agent_session = None;
+        self.agent_session_display_name = None;
+        self.agent_session_display_icon = None;
         Some(TerminalStateMutation {
             effective_state_change: self.recompute_effective_state(
                 previous_agent_label,
@@ -1773,6 +1797,8 @@ impl TerminalState {
         self.hook_authority = None;
         if !preserve_foreign_persisted_session {
             self.persisted_agent_session = None;
+            self.agent_session_display_name = None;
+            self.agent_session_display_icon = None;
         }
         let current_session = self.current_session_identity_for_persistence();
         Some(TerminalStateMutation {
@@ -2053,6 +2079,8 @@ impl TerminalState {
         self.fallback_observed_at = None;
         self.hook_authority = None;
         self.persisted_agent_session = None;
+        self.agent_session_display_name = None;
+        self.agent_session_display_icon = None;
         self.agent_metadata.clear();
         self.metadata_report_agents.clear();
         self.suppressed_full_lifecycle_hook_reports.clear();

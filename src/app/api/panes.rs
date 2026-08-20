@@ -1268,6 +1268,8 @@ impl App {
         let Some(agent_label) = normalize_reported_agent_label(&params.agent) else {
             return invalid_agent(id);
         };
+        // Session name/icon are display-only: stored on the terminal for the
+        // tab bar to render, not part of resume/session identity.
         self.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
             pane_id,
             session_ref: crate::agent_resume::session_ref_from_report(
@@ -1282,6 +1284,8 @@ impl App {
             session_start_source: crate::agent_resume::normalize_session_start_source(
                 params.session_start_source,
             ),
+            agent_session_name: params.agent_session_name,
+            agent_session_icon: params.agent_session_icon,
         });
 
         encode_success(id, ResponseResult::Ok {})

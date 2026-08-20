@@ -269,6 +269,7 @@ fn compute_view_internal(
         .map(|ws| {
             compute_tab_bar_view(
                 ws,
+                &app.terminals,
                 tab_bar_content_area(app, tab_bar_rect),
                 app.tab_scroll,
                 app.tab_scroll_follow_active,
