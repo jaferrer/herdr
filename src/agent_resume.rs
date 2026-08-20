@@ -83,6 +83,7 @@ pub fn is_reserved_native_state_source(source: &str, agent: &str) -> bool {
     matches!(
         (source, agent),
         ("herdr:claude", "claude")
+            | ("herdr:jcode", "jcode")
             | ("herdr:codex", "codex")
             | ("herdr:copilot", "copilot")
             | ("herdr:devin", "devin")
@@ -207,6 +208,9 @@ pub fn plan(source: &str, agent: &str, session_ref: &AgentSessionRef) -> Option<
         ("herdr:grok", "grok", AgentSessionRefKind::Id) => {
             vec!["grok".into(), "--resume".into(), session_ref.value.clone()]
         }
+        ("herdr:jcode", "jcode", AgentSessionRefKind::Id) => {
+            vec!["jcode".into(), "--resume".into(), session_ref.value.clone()]
+        }
         _ => return None,
     };
 
@@ -244,6 +248,7 @@ pub(crate) fn is_official_agent_source(source: &str, agent: &str) -> bool {
             | ("herdr:cursor", "cursor")
             | ("herdr:antigravity_cli", "agy")
             | ("herdr:grok", "grok")
+            | ("herdr:jcode", "jcode")
     )
 }
 
@@ -463,6 +468,16 @@ mod tests {
             .unwrap()
             .argv,
             vec!["grok", "--resume", "grok-session"]
+        );
+        assert_eq!(
+            plan(
+                "herdr:jcode",
+                "jcode",
+                &AgentSessionRef::id("jcode-session").unwrap()
+            )
+            .unwrap()
+            .argv,
+            vec!["jcode", "--resume", "jcode-session"]
         );
     }
 

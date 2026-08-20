@@ -1,0 +1,43 @@
+id = "jcode"
+version = "2026.08.20.1"
+min_engine_version = 3
+updated_at = "2026-08-20T00:00:00Z"
+aliases = []
+
+# Initial bundled Jcode manifest. The first-class integration reports native
+# session identity only; screen detection remains responsible for lifecycle
+# state until Jcode exposes complete blocked/idle/working authority.
+
+[[rules]]
+id = "blocked_permission_prompt"
+state = "blocked"
+priority = 1200
+region = "whole_recent"
+visible_blocker = true
+any = [
+  { contains = ["Allow?", "Deny"] },
+  { contains = ["permission", "approve"] },
+]
+
+[[rules]]
+id = "working_spinner_or_tool"
+state = "working"
+priority = 1000
+region = "bottom_non_empty_lines(8)"
+visible_working = true
+any = [
+  { contains = ["Calling tool"] },
+  { contains = ["Running"] },
+  { line_regex = ['[⠁⠂⠄⡀⢀⠠⠐⠈⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]'] },
+]
+
+[[rules]]
+id = "idle_prompt"
+state = "idle"
+priority = 900
+region = "bottom_non_empty_lines(5)"
+visible_idle = true
+any = [
+  { contains = ["What would you like to do?"] },
+  { contains = ["›"] },
+]

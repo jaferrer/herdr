@@ -1274,7 +1274,7 @@ fn pane_report_agent(args: &[String]) -> std::io::Result<i32> {
 
 fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_pane_id) = args.first() else {
-        eprintln!("usage: herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--session-start-source SOURCE]");
+        eprintln!("usage: herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--agent-session-name NAME] [--agent-session-icon ICON] [--session-start-source SOURCE]");
         return Ok(2);
     };
 
@@ -1284,6 +1284,8 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
     let mut seq = None;
     let mut agent_session_id = None;
     let mut agent_session_path = None;
+    let mut agent_session_name = None;
+    let mut agent_session_icon = None;
     let mut session_start_source = None;
 
     let mut index = 1;
@@ -1329,6 +1331,22 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
                 agent_session_path = Some(value.clone());
                 index += 2;
             }
+            "--agent-session-name" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --agent-session-name");
+                    return Ok(2);
+                };
+                agent_session_name = Some(value.clone());
+                index += 2;
+            }
+            "--agent-session-icon" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --agent-session-icon");
+                    return Ok(2);
+                };
+                agent_session_icon = Some(value.clone());
+                index += 2;
+            }
             "--session-start-source" => {
                 let Some(value) = args.get(index + 1) else {
                     eprintln!("missing value for --session-start-source");
@@ -1364,6 +1382,8 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
             seq,
             agent_session_id,
             agent_session_path,
+            agent_session_name,
+            agent_session_icon,
             session_start_source,
         },
     ))

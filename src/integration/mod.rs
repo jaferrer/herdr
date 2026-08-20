@@ -294,6 +294,17 @@ const GROK_HOOK_ASSET: &str = if cfg!(windows) {
     include_str!("assets/grok/herdr-agent-state.sh")
 };
 const GROK_INTEGRATION_VERSION: u32 = 1;
+const JCODE_HOOK_INSTALL_NAME: &str = if cfg!(windows) {
+    "herdr-agent-session.ps1"
+} else {
+    "herdr-agent-session.sh"
+};
+const JCODE_HOOK_ASSET: &str = if cfg!(windows) {
+    include_str!("assets/jcode/herdr-agent-session.ps1")
+} else {
+    include_str!("assets/jcode/herdr-agent-session.sh")
+};
+const JCODE_INTEGRATION_VERSION: u32 = 1;
 
 pub(crate) const INSTALL_WARNING_PREFIX: &str = "warning:";
 

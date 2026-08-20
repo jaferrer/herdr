@@ -3291,6 +3291,87 @@ fn install_qwen_errors_when_config_dir_missing() {
 }
 
 #[test]
+fn install_jcode_writes_session_hook_and_preserves_config() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let jcode_dir = base.join(".jcode");
+    fs::create_dir_all(&jcode_dir).unwrap();
+    fs::write(
+        jcode_dir.join("config.toml"),
+        "model = \"gpt\"\n\n[hooks]\nsession_start = \"\"\n",
+    )
+    .unwrap();
+    std::env::set_var(JCODE_HOME_ENV_VAR, &jcode_dir);
+
+    let installed = install_jcode().unwrap();
+
+    assert_eq!(
+        installed.hook_path,
+        jcode_dir.join("hooks").join(JCODE_HOOK_INSTALL_NAME)
+    );
+    assert_eq!(installed.config_path, jcode_dir.join("config.toml"));
+    assert!(installed.hook_path.is_file());
+    let hook_asset = fs::read_to_string(&installed.hook_path).unwrap();
+    assert!(hook_asset.contains("HERDR_INTEGRATION_ID=jcode"));
+    assert!(hook_asset.contains("HERDR_INTEGRATION_VERSION=1"));
+    assert!(hook_asset.contains("JCODE_HOOK_SESSION_NAME"));
+    assert!(hook_asset.contains("JCODE_HOOK_SESSION_ICON"));
+    assert!(hook_asset.contains("herdr:jcode"));
+
+    let config = fs::read_to_string(&installed.config_path).unwrap();
+    assert!(config.contains("model = \"gpt\""));
+    assert!(config.contains("[hooks]"));
+    assert!(config.contains("session_start"));
+    assert!(config.contains("herdr-agent-session"));
+
+    install_jcode().unwrap();
+    let config = fs::read_to_string(&installed.config_path).unwrap();
+    assert_eq!(config.matches("session_start").count(), 1);
+
+    std::env::remove_var(JCODE_HOME_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn install_jcode_refuses_existing_user_session_start_hook() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let jcode_dir = base.join(".jcode");
+    fs::create_dir_all(&jcode_dir).unwrap();
+    fs::write(
+        jcode_dir.join("config.toml"),
+        "[hooks]\nsession_start = \"~/bin/user-hook\"\n",
+    )
+    .unwrap();
+    std::env::set_var(JCODE_HOME_ENV_VAR, &jcode_dir);
+
+    let err = install_jcode().unwrap_err().to_string();
+    assert!(err.contains("session_start hook already exists"));
+
+    std::env::remove_var(JCODE_HOME_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
+fn uninstall_jcode_removes_only_herdr_session_hook() {
+    let _lock = integration_env_lock();
+    let base = unique_base();
+    let jcode_dir = base.join(".jcode");
+    fs::create_dir_all(&jcode_dir).unwrap();
+    std::env::set_var(JCODE_HOME_ENV_VAR, &jcode_dir);
+
+    install_jcode().unwrap();
+    let result = uninstall_jcode().unwrap();
+    assert!(result.removed_hook_file);
+    assert!(result.updated_config);
+    let config = fs::read_to_string(&result.config_path).unwrap();
+    assert!(!config.contains("herdr-agent-session"));
+
+    std::env::remove_var(JCODE_HOME_ENV_VAR);
+    let _ = fs::remove_dir_all(base);
+}
+
+#[test]
 fn install_cursor_writes_hook_and_updates_hooks_json() {
     let _lock = integration_env_lock();
     let base = unique_base();

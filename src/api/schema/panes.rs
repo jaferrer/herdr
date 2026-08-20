@@ -392,6 +392,10 @@ pub struct PaneReportAgentSessionParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_session_icon: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_start_source: Option<String>,
 }
 

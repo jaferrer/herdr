@@ -63,10 +63,11 @@ pub enum Agent {
     Qodercli,
     Qwen,
     Maki,
+    Jcode,
 }
 
 impl Agent {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Pi,
         Self::Claude,
         Self::Codex,
@@ -89,9 +90,10 @@ impl Agent {
         Self::Qodercli,
         Self::Qwen,
         Self::Maki,
+        Self::Jcode,
     ];
 
-    pub const SCREEN_MANIFEST_AGENTS: [Self; 20] = [
+    pub const SCREEN_MANIFEST_AGENTS: [Self; 21] = [
         Self::Pi,
         Self::Claude,
         Self::Codex,
@@ -112,6 +114,7 @@ impl Agent {
         Self::Qodercli,
         Self::Qwen,
         Self::Maki,
+        Self::Jcode,
     ];
 }
 
@@ -139,6 +142,7 @@ pub fn agent_label(agent: Agent) -> &'static str {
         Agent::Qodercli => "qodercli",
         Agent::Qwen => "qwen",
         Agent::Maki => "maki",
+        Agent::Jcode => "jcode",
     }
 }
 
@@ -172,6 +176,7 @@ pub fn interactive_agent_executable(agent: Agent) -> &'static str {
         Agent::Qodercli => "qodercli",
         Agent::Qwen => "qwen",
         Agent::Maki => "maki",
+        Agent::Jcode => "jcode",
     }
 }
 
@@ -209,6 +214,7 @@ fn lookup_agent(name: &str) -> Option<Agent> {
         "qodercli" | "qoderclicn" | "qoder" | "qodercn" => Some(Agent::Qodercli),
         "qwen" | "qwen-code" | "qwen code" => Some(Agent::Qwen),
         "maki" => Some(Agent::Maki),
+        "jcode" => Some(Agent::Jcode),
         _ => None,
     }
 }
