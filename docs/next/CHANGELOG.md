@@ -2,7 +2,16 @@
 
 ## Unreleased
 
+### Added
+- Added an overview grid of every open session, opened with `prefix+a` or from the global menu. Cells show the workspace, tab, agent, and status; arrows, Tab, and Enter move focus, and Esc returns to the terminal.
+- Added a connections picker to the global menu for choosing the Local or SSH destination and adding one with `+ ssh`, plus `herdr connection` and client-local Local/SSH destination profiles. A bare `herdr` attaches to the active destination; `--remote` still overrides it, and passwords are never stored.
+- Added JCode detection, integration-managed native session reporting, and session restore.
+
+### Changed
+- Auto-named desktop tabs now show the focused agent's reported session name and icon when available.
+
 ### Fixed
+- The overview grid now bottom-anchors each session thumbnail to its most recent rows instead of freezing on the top of the pane's full terminal buffer, so live scrolling output is visible at a glance.
 - Retained mouse selections now copy when Ctrl+C or Cmd+C arrives before a delayed mouse release instead of forwarding the copy shortcut to the pane. (#3100, thanks @moret)
 - Removing a background worktree workspace no longer changes focus to its parent workspace. (#3098)
 - Prefix bindings such as `prefix+|` now recognize characters produced by macOS Option and custom keyboard layouts, while exact chords such as `prefix+alt+w` keep priority. (#3079, thanks @vlcinsky)
@@ -17,8 +26,6 @@
 ## [0.8.2] - 2026-08-19
 
 ### Added
-- Added an overview grid of every open session, opened with `prefix+a` or from the global menu. Cells show the workspace, tab, agent, and status; arrows, Tab, and Enter move focus, and Esc returns to the terminal.
-- Added a connections picker to the global menu for choosing the Local or SSH destination and adding one with `+ ssh`, plus `herdr connection` and client-local Local/SSH destination profiles. A bare `herdr` attaches to the active destination; `--remote` still overrides it, and passwords are never stored.
 - CLI help now points coding agents to Herdr's plain-text guide, documentation index, and built-in control skill.
 - Added Qwen Code detection for idle, working, and user-confirmation states, plus optional native session restore. (#2730, #2743)
 - Herdr now keeps the outer terminal window title in sync with the session through `ui.window_title`, so window managers and terminal tab bars show the active workspace and the host the panes actually run on. (#2627, thanks @dhh)
@@ -42,7 +49,6 @@
 - Experimental pane graphics now support bounded named layers, acknowledged full-RGBA primary-layer direct file frames on audited local terminals, owned BGRA fallback, exact pixel mouse input, and placement-only resize replay.
 
 ### Fixed
-- The overview grid now bottom-anchors each session thumbnail to its most recent rows instead of freezing on the top of the pane's full terminal buffer, so live scrolling output is visible at a glance.
 - Live handoff now preserves mouse forwarding for running pane applications. (#3000, thanks @xkrogen)
 - Unix CLI commands now exit quietly when a downstream pipe closes instead of panicking with exit 101. (#2994)
 - The terminal theme now keeps the active Space row fill visible when the Navigate cursor lands on it, in both expanded and collapsed sidebars. (#2987)
