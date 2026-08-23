@@ -165,11 +165,29 @@ pub struct AgentStartParams {
     pub name: String,
     pub kind: String,
     pub pane_id: String,
+    #[serde(default, skip_serializing_if = "AgentStartMode::is_start")]
+    pub mode: AgentStartMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
     /// Startup timeout in milliseconds. Values must be greater than 3000 and at most 300000.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStartMode {
+    #[default]
+    Start,
+    Resume,
+}
+
+impl AgentStartMode {
+    fn is_start(&self) -> bool {
+        *self == Self::Start
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -213,6 +231,10 @@ pub struct AgentInfo {
     pub launch_pending: bool,
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub interactive_ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub process_lifecycle: Option<crate::terminal::ManagedAgentLifecycle>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch_generation: Option<u64>,
     #[serde(default)]
     pub state_change_seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]

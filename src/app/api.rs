@@ -24,6 +24,7 @@ const WINDOWS_POWERSHELL_AGENT_EXIT_RESPAWN_GRACE: Duration = Duration::from_sec
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimeExitAction {
     RespawnShell,
+    PreserveStopped,
     ClosePane,
 }
 
@@ -105,6 +106,20 @@ impl App {
         changed
     }
 
+    pub(crate) fn stale_managed_runtime_event(
+        &self,
+        pane_id: crate::layout::PaneId,
+        generation: Option<u64>,
+    ) -> bool {
+        let Some(generation) = generation else {
+            return false;
+        };
+        self.find_pane(pane_id)
+            .and_then(|(_, pane)| self.state.terminals.get(&pane.attached_terminal_id))
+            .and_then(crate::terminal::TerminalState::managed_agent_generation)
+            != Some(generation)
+    }
+
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
         let _ = self.handle_internal_event_with_pane_updates(ev);
     }
@@ -113,6 +128,15 @@ impl App {
         &mut self,
         ev: AppEvent,
     ) -> Vec<crate::app::actions::PaneStateUpdate> {
+        if let AppEvent::PaneDied {
+            pane_id,
+            generation,
+        } = &ev
+        {
+            if self.stale_managed_runtime_event(*pane_id, *generation) {
+                return Vec::new();
+            }
+        }
         if let AppEvent::TerminalBell { count, .. } = ev {
             if let Err(err) =
                 crate::terminal_effects::write_terminal_bells(&mut std::io::stdout(), count)
@@ -207,7 +231,7 @@ impl App {
             return Vec::new();
         }
 
-        if let AppEvent::PaneDied { pane_id } = &ev {
+        if let AppEvent::PaneDied { pane_id, .. } = &ev {
             if self
                 .state
                 .popup_pane
@@ -217,6 +241,15 @@ impl App {
                 self.close_popup_pane();
                 return Vec::new();
             }
+            let exit_action = self.runtime_exit_action(*pane_id);
+            if exit_action == RuntimeExitAction::PreserveStopped {
+                if let Some((_, pane)) = self.find_pane(*pane_id) {
+                    let terminal_id = pane.attached_terminal_id.clone();
+                    if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                        terminal.mark_managed_agent_stopped();
+                    }
+                }
+            }
             let previous_toast = self.state.toast.clone();
             if let Some(update) = self.state.publish_pane_process_exit_if_agent(*pane_id) {
                 self.sync_full_lifecycle_authority_detection_pauses();
@@ -224,7 +257,7 @@ impl App {
                 self.emit_pane_state_update(&update);
                 self.emit_terminal_or_system_agent_notifications(std::slice::from_ref(&update));
             }
-            if self.runtime_exit_action(*pane_id) == RuntimeExitAction::RespawnShell
+            if exit_action == RuntimeExitAction::RespawnShell
                 && self.respawn_shell_for_launch_pane(*pane_id)
             {
                 self.overlay_panes.remove(pane_id);
@@ -232,9 +265,22 @@ impl App {
                 self.render_notify.notify_one();
                 return Vec::new();
             }
+            if exit_action == RuntimeExitAction::PreserveStopped {
+                if let Some((_, pane)) = self.find_pane(*pane_id) {
+                    let terminal_id = pane.attached_terminal_id.clone();
+                    if let Some(runtime) = self.terminal_runtimes.remove(&terminal_id) {
+                        runtime.shutdown();
+                    }
+                }
+                self.state.mark_session_dirty();
+                self.schedule_session_save();
+                self.render_dirty.request_generic();
+                self.render_notify.notify_one();
+                return Vec::new();
+            }
         }
 
-        let overlay_state = if let AppEvent::PaneDied { pane_id } = &ev {
+        let overlay_state = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.overlay_panes.remove(pane_id).map(|overlay| {
                 let was_overlay_active =
                     self.state
@@ -258,7 +304,7 @@ impl App {
             None
         };
 
-        if let AppEvent::PaneDied { pane_id } = &ev {
+        if let AppEvent::PaneDied { pane_id, .. } = &ev {
             if let Some((ws_idx, _)) = self.find_pane(*pane_id) {
                 if let Some(public_pane_id) = self.public_pane_id(ws_idx, *pane_id) {
                     self.emit_event(crate::api::schema::EventEnvelope {
@@ -271,7 +317,7 @@ impl App {
                 }
             }
         }
-        let pane_exit_layout_target = if let AppEvent::PaneDied { pane_id } = &ev {
+        let pane_exit_layout_target = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.find_pane(*pane_id).and_then(|(ws_idx, _)| {
                 self.layout_update_target_after_pane_removal(ws_idx, *pane_id)
             })
@@ -525,6 +571,8 @@ impl App {
 
         if terminal.respawn_shell_on_exit || self.should_respawn_shell_after_agent_exit(terminal) {
             RuntimeExitAction::RespawnShell
+        } else if terminal.managed_agent_generation().is_some() {
+            RuntimeExitAction::PreserveStopped
         } else {
             RuntimeExitAction::ClosePane
         }
@@ -1907,6 +1955,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            generation: None,
         });
 
         let overlay_tab = &app.state.workspaces[0].tabs[0];
@@ -1933,7 +1982,10 @@ mod tests {
         app.state.ensure_test_terminals();
         let tab_id = app.public_tab_id(0, 0).unwrap();
 
-        app.handle_internal_event(AppEvent::PaneDied { pane_id: dead_pane });
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id: dead_pane,
+            generation: None,
+        });
 
         let events = event_hub.events_after(0);
         let pane_exited = events
@@ -2082,6 +2134,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            generation: None,
         });
 
         let events = event_hub.events_after(0);
@@ -2107,6 +2160,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            generation: None,
         });
 
         let tab = &app.state.workspaces[0].tabs[0];
@@ -2126,6 +2180,7 @@ mod tests {
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id: overlay_pane,
+            generation: None,
         });
 
         let tab = &app.state.workspaces[0].tabs[0];
@@ -2164,7 +2219,10 @@ mod tests {
                 .expect("test session id should be valid"),
         });
 
-        app.handle_internal_event(AppEvent::PaneDied { pane_id });
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            generation: None,
+        });
 
         assert!(
             app.find_pane(pane_id).is_some(),
@@ -2182,6 +2240,102 @@ mod tests {
         for (_, runtime) in app.terminal_runtimes.drain() {
             runtime.shutdown();
         }
+    }
+
+    #[test]
+    fn managed_agent_runtime_exit_keeps_stopped_recoverable_pane() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let workspace = crate::workspace::Workspace::test_new("managed-exit");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        let now = Instant::now();
+        terminal.begin_managed_agent_with_argv(
+            "otter".into(),
+            crate::detect::Agent::Pi,
+            vec!["pi".into()],
+            now,
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(
+                std::env::current_dir()
+                    .unwrap()
+                    .join("opaque-pi.jsonl")
+                    .display()
+                    .to_string(),
+            )
+            .unwrap(),
+        });
+        terminal.set_detected_state(Some(crate::detect::Agent::Pi), AgentState::Idle);
+        assert!(terminal.reconcile_managed_agent_at(now, false));
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            generation: Some(1),
+        });
+
+        assert!(app.find_pane(pane_id).is_some());
+        let terminal = &app.state.terminals[&terminal_id];
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(crate::terminal::ManagedAgentLifecycle::Stopped)
+        );
+        assert!(terminal.persisted_agent_session.is_some());
+        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
+    }
+
+    #[test]
+    fn stale_managed_runtime_exit_does_not_stop_current_generation() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = App::new(
+            &crate::config::Config::default(),
+            true,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        let workspace = crate::workspace::Workspace::test_new("managed-stale-exit");
+        let pane_id = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(pane_id).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_stopped_managed_agent("otter".into(), Agent::Pi, vec!["pi".into()], 1);
+        assert_eq!(
+            terminal.begin_managed_agent_with_argv(
+                "otter".into(),
+                Agent::Pi,
+                vec!["pi".into(), "--session".into(), "opaque".into()],
+                Instant::now(),
+                Duration::ZERO,
+                Duration::from_secs(30),
+            ),
+            2
+        );
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            generation: Some(1),
+        });
+
+        assert!(app.find_pane(pane_id).is_some());
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_lifecycle(),
+            Some(crate::terminal::ManagedAgentLifecycle::Starting)
+        );
     }
 
     #[cfg(windows)]

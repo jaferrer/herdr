@@ -104,9 +104,22 @@ pub struct PaneSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_agent_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_agent: Option<ManagedAgentSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedAgentSnapshot {
+    pub name: String,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub argv: Vec<String>,
+    #[serde(default)]
+    pub generation: u64,
+    pub lifecycle: crate::terminal::ManagedAgentLifecycle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -338,6 +351,15 @@ fn capture_tab(
             })
             .unwrap_or_default();
         let launch_argv = terminal.and_then(|terminal| terminal.launch_argv.clone());
+        let managed_agent = terminal.and_then(|terminal| {
+            Some(ManagedAgentSnapshot {
+                name: terminal.managed_agent_name()?.to_string(),
+                kind: crate::detect::agent_label(terminal.managed_agent_kind()?).to_string(),
+                argv: terminal.managed_agent_argv()?.to_vec(),
+                generation: terminal.managed_agent_generation()?,
+                lifecycle: terminal.managed_agent_lifecycle()?,
+            })
+        });
         let agent_session = terminal.and_then(|terminal| {
             if let Some(authority) = terminal.hook_authority.as_ref() {
                 if let Some(session_ref) = authority.session_ref.as_ref() {
@@ -366,6 +388,7 @@ fn capture_tab(
                 label,
                 agent_name,
                 managed_agent_kind,
+                managed_agent,
                 agent_session,
                 launch_argv,
             },
@@ -596,6 +619,58 @@ mod tests {
     }
 
     #[test]
+    fn stopped_managed_agent_definition_round_trips_separately_from_session_ref() {
+        let mut state = state_with_workspaces(&["managed-stopped"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        let now = std::time::Instant::now();
+        terminal.begin_managed_agent_with_argv(
+            "otter".into(),
+            crate::detect::Agent::Pi,
+            vec!["pi".into(), "--provider".into(), "omniroute".into()],
+            now,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(30),
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(test_session_path(
+                "opaque-pi.jsonl",
+            ))
+            .unwrap(),
+        });
+        terminal.set_detected_state(
+            Some(crate::detect::Agent::Pi),
+            crate::detect::AgentState::Idle,
+        );
+        assert!(terminal.reconcile_managed_agent_at(now, false));
+        assert!(terminal.reconcile_managed_agent_at(now, true));
+
+        let json = serde_json::to_string(&capture_from_state(&state)).unwrap();
+        let restored = parse_snapshot(&json).unwrap();
+        let pane = &restored.workspaces[0].tabs[0].panes[&root.raw()];
+        let managed = pane.managed_agent.as_ref().expect("durable definition");
+        assert_eq!(managed.name, "otter");
+        assert_eq!(managed.kind, "pi");
+        assert_eq!(managed.argv, ["pi", "--provider", "omniroute"]);
+        assert_eq!(managed.generation, 1);
+        assert_eq!(
+            managed.lifecycle,
+            crate::terminal::ManagedAgentLifecycle::Stopped
+        );
+        assert_eq!(
+            pane.agent_session
+                .as_ref()
+                .map(|session| session.value.as_str()),
+            Some(test_session_path("opaque-pi.jsonl").as_str())
+        );
+    }
+
+    #[test]
     fn round_trip_empty_session() {
         let snap = SessionSnapshot {
             version: SNAPSHOT_VERSION,
@@ -646,6 +721,7 @@ mod tests {
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,
+                managed_agent: None,
                 agent_session: None,
                 launch_argv: None,
             },
@@ -657,6 +733,7 @@ mod tests {
                 label: Some("website".into()),
                 agent_name: None,
                 managed_agent_kind: None,
+                managed_agent: None,
                 agent_session: None,
                 launch_argv: None,
             },
@@ -1205,6 +1282,7 @@ mod tests {
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,
+                managed_agent: None,
                 agent_session: None,
                 launch_argv: None,
             },
@@ -1218,6 +1296,7 @@ mod tests {
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,
+                managed_agent: None,
                 agent_session: None,
                 launch_argv: None,
             },

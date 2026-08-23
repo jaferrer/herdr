@@ -55,12 +55,21 @@ pub struct WorktreeRemoveResult {
 #[derive(Debug)]
 pub enum AppEvent {
     /// A pane's child process exited.
-    PaneDied { pane_id: PaneId },
+    PaneDied {
+        pane_id: PaneId,
+        generation: Option<u64>,
+    },
     /// Process detection identified an agent before its screen state was confirmed.
     AgentProcessDetected {
         pane_id: PaneId,
         agent: Agent,
         observed_at: Instant,
+    },
+    /// Process lifecycle reported by a generation-bearing managed runtime.
+    ManagedAgentLifecycleReported {
+        pane_id: PaneId,
+        generation: u64,
+        lifecycle: crate::terminal::ManagedAgentLifecycle,
     },
     /// Fallback detector state changed in a pane.
     StateChanged {

@@ -455,6 +455,7 @@ fn agent_command() -> Command {
                     option("timeout", "MS")
                         .help("Wait for interactive readiness (default: 30000; max: 300000)"),
                 )
+                .arg(flag("resume").help("Resume the stopped managed agent in this pane"))
                 .arg(
                     Arg::new("agent_args")
                         .value_name("AGENT_ARG")

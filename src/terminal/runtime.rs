@@ -234,6 +234,10 @@ impl TerminalRuntime {
         self.0.begin_graceful_release(agent);
     }
 
+    pub fn set_managed_agent_generation(&self, generation: u64) {
+        self.0.set_managed_agent_generation(generation);
+    }
+
     pub fn reset_agent_detection(&self) {
         self.0.reset_agent_detection();
     }

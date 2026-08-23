@@ -572,7 +572,18 @@ impl AppState {
             let status_label = terminal
                 .map(|terminal| terminal.effective_presentation().state_labels)
                 .and_then(|labels| labels.get(state_label_text(state, pane.seen)).cloned());
-            let status = status_label
+            let process_status =
+                terminal.and_then(|terminal| match terminal.managed_agent_lifecycle() {
+                    Some(crate::terminal::ManagedAgentLifecycle::Starting) => Some("starting"),
+                    Some(crate::terminal::ManagedAgentLifecycle::Stopped) => Some("stopped"),
+                    Some(crate::terminal::ManagedAgentLifecycle::StartFailed) => {
+                        Some("unavailable")
+                    }
+                    Some(crate::terminal::ManagedAgentLifecycle::Running) | None => None,
+                });
+            let status = process_status
+                .map(str::to_string)
+                .or(status_label)
                 .or_else(|| agent_label.map(|_| state_label_text(state, pane.seen).to_string()));
             let meta = match (agent_label, status.as_deref()) {
                 (Some(agent_label), Some(status)) => format!("{agent_label} · {status}"),
@@ -2718,7 +2729,7 @@ impl AppState {
 
     pub fn handle_app_event(&mut self, event: AppEvent) -> Vec<PaneStateUpdate> {
         match event {
-            AppEvent::PaneDied { pane_id } => {
+            AppEvent::PaneDied { pane_id, .. } => {
                 self.handle_pane_died(pane_id);
                 Vec::new()
             }
@@ -2784,6 +2795,30 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            AppEvent::ManagedAgentLifecycleReported {
+                pane_id,
+                generation,
+                lifecycle,
+            } => {
+                let Some(terminal_id) = self
+                    .workspaces
+                    .iter()
+                    .find_map(|workspace| workspace.terminal_id(pane_id))
+                    .cloned()
+                else {
+                    return Vec::new();
+                };
+                if self
+                    .terminals
+                    .get_mut(&terminal_id)
+                    .is_some_and(|terminal| {
+                        terminal.report_managed_agent_lifecycle(generation, lifecycle)
+                    })
+                {
+                    self.mark_session_dirty();
+                }
+                Vec::new()
+            }
             AppEvent::StateChanged {
                 pane_id,
                 agent,
@@ -3459,6 +3494,44 @@ mod tests {
             checkout_path: "/repo/herdr".into(),
             is_linked_worktree: false,
         });
+    }
+
+    #[test]
+    fn stale_managed_lifecycle_event_is_ignored_after_new_launch() {
+        let mut state = app_with_workspaces(&["generation"]);
+        let pane_id = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].terminal_id(pane_id).cloned().unwrap();
+        let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_stopped_managed_agent("otter".into(), Agent::Pi, vec!["pi".into()], 1);
+        let current = terminal.begin_managed_agent_with_argv(
+            "otter".into(),
+            Agent::Pi,
+            vec!["pi".into(), "--session".into(), "opaque".into()],
+            Instant::now(),
+            std::time::Duration::ZERO,
+            std::time::Duration::from_secs(30),
+        );
+        assert_eq!(current, 2);
+
+        state.handle_app_event(AppEvent::ManagedAgentLifecycleReported {
+            pane_id,
+            generation: 1,
+            lifecycle: crate::terminal::ManagedAgentLifecycle::Stopped,
+        });
+        assert_eq!(
+            state.terminals[&terminal_id].managed_agent_lifecycle(),
+            Some(crate::terminal::ManagedAgentLifecycle::Starting)
+        );
+
+        state.handle_app_event(AppEvent::ManagedAgentLifecycleReported {
+            pane_id,
+            generation: current,
+            lifecycle: crate::terminal::ManagedAgentLifecycle::Running,
+        });
+        assert_eq!(
+            state.terminals[&terminal_id].managed_agent_lifecycle(),
+            Some(crate::terminal::ManagedAgentLifecycle::Running)
+        );
     }
 
     #[test]
@@ -5280,6 +5353,7 @@ mod tests {
         let deadline = state.next_pending_agent_notification_deadline().unwrap();
         state.handle_app_event(AppEvent::PaneDied {
             pane_id: bg_pane_id,
+            generation: None,
         });
 
         assert!(state.pending_agent_notifications.is_empty());

@@ -2571,8 +2571,17 @@ impl HeadlessServer {
 
                 true
             }
-            AppEvent::PaneDied { pane_id } => {
+            AppEvent::PaneDied {
+                pane_id,
+                generation,
+            } => {
                 let pane_id_val = *pane_id;
+                if self
+                    .app
+                    .stale_managed_runtime_event(pane_id_val, *generation)
+                {
+                    return true;
+                }
                 let terminal_id = self.app.state.workspaces.iter().find_map(|ws| {
                     ws.tabs.iter().find_map(|tab| {
                         tab.panes
@@ -7147,7 +7156,12 @@ next_tab = ""
         );
         assert_eq!(server.terminal_attach_owners.get(&terminal_id), Some(&7));
 
-        assert!(server.handle_internal_event_with_forwarding(AppEvent::PaneDied { pane_id }));
+        assert!(
+            server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
+                pane_id,
+                generation: None,
+            })
+        );
 
         assert!(!server.clients.contains_key(&7));
         assert!(!server.terminal_attach_owners.contains_key(&terminal_id));

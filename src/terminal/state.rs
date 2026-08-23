@@ -75,6 +75,26 @@ struct ManagedAgent {
     phase: ManagedAgentPhase,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedAgentLifecycle {
+    Starting,
+    Running,
+    Stopped,
+    StartFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedAgentDefinition {
+    name: String,
+    kind: Agent,
+    argv: Vec<String>,
+    generation: u64,
+    lifecycle: ManagedAgentLifecycle,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EffectiveStateChange {
     pub previous_agent_label: Option<String>,
@@ -138,6 +158,7 @@ pub struct TerminalState {
     pub agent_name: Option<String>,
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
+    managed_agent_definition: Option<ManagedAgentDefinition>,
     hook_report_sequences: HashMap<String, u64>,
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
@@ -174,6 +195,7 @@ impl TerminalState {
             agent_name: None,
             agent_name_owner: None,
             managed_agent: None,
+            managed_agent_definition: None,
             hook_report_sequences: HashMap::new(),
             suppressed_full_lifecycle_hook_reports: HashMap::new(),
             stale_full_lifecycle_hook_sessions: HashMap::new(),
@@ -326,6 +348,7 @@ impl TerminalState {
         process_exited: bool,
         now: Instant,
     ) -> TerminalStateMutation {
+        let managed_process_exit = process_exited && self.managed_agent_definition.is_some();
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_known_agent = self.effective_known_agent();
         let previous_state = self.state;
@@ -507,7 +530,8 @@ impl TerminalState {
                 self.agent_session_display_name = None;
                 self.agent_session_display_icon = None;
             }
-            if !newer_custom_authority
+            if !managed_process_exit
+                && !newer_custom_authority
                 && self
                     .persisted_agent_session
                     .as_ref()
@@ -581,7 +605,7 @@ impl TerminalState {
             self.hook_authority = None;
             self.persisted_agent_session = durable_session;
         }
-        if agent_released {
+        if agent_released && !managed_process_exit {
             self.clear_agent_name();
         }
         TerminalStateMutation {
@@ -1894,6 +1918,12 @@ impl TerminalState {
 
     pub fn set_agent_name(&mut self, name: String) {
         self.agent_name = (!name.is_empty()).then_some(name);
+        if let (Some(definition), Some(name)) = (
+            self.managed_agent_definition.as_mut(),
+            self.agent_name.as_ref(),
+        ) {
+            definition.name.clone_from(name);
+        }
         self.agent_name_owner = self.agent_name.as_ref().and_then(|_| {
             self.hook_authority
                 .as_ref()
@@ -1919,6 +1949,7 @@ impl TerminalState {
         });
     }
 
+    #[cfg(test)]
     pub fn begin_managed_agent(
         &mut self,
         name: String,
@@ -1927,10 +1958,33 @@ impl TerminalState {
         settle_delay: Duration,
         timeout: Duration,
     ) {
+        self.begin_managed_agent_with_argv(name, kind, Vec::new(), now, settle_delay, timeout);
+    }
+
+    pub fn begin_managed_agent_with_argv(
+        &mut self,
+        name: String,
+        kind: Agent,
+        argv: Vec<String>,
+        now: Instant,
+        settle_delay: Duration,
+        timeout: Duration,
+    ) -> u64 {
+        let generation = self
+            .managed_agent_definition
+            .as_ref()
+            .map_or(1, |definition| definition.generation.saturating_add(1));
         self.set_agent_name(name);
         self.agent_name_owner = Some(AgentNameOwner {
             agent_label: crate::detect::agent_label(kind).to_string(),
             session_ref: None,
+        });
+        self.managed_agent_definition = Some(ManagedAgentDefinition {
+            name: self.agent_name.clone().unwrap_or_default(),
+            kind,
+            argv,
+            generation,
+            lifecycle: ManagedAgentLifecycle::Starting,
         });
         self.managed_agent = Some(ManagedAgent {
             kind,
@@ -1940,6 +1994,7 @@ impl TerminalState {
                 observed_expected: false,
             },
         });
+        generation
     }
 
     pub fn managed_agent_launch_pending(&self) -> bool {
@@ -1957,7 +2012,76 @@ impl TerminalState {
     }
 
     pub fn managed_agent_kind(&self) -> Option<Agent> {
-        self.managed_agent.map(|managed| managed.kind)
+        self.managed_agent_definition
+            .as_ref()
+            .map(|definition| definition.kind)
+            .or_else(|| self.managed_agent.map(|managed| managed.kind))
+    }
+
+    pub fn managed_agent_lifecycle(&self) -> Option<ManagedAgentLifecycle> {
+        self.managed_agent_definition
+            .as_ref()
+            .map(|definition| definition.lifecycle)
+    }
+
+    pub fn managed_agent_name(&self) -> Option<&str> {
+        self.managed_agent_definition
+            .as_ref()
+            .map(|definition| definition.name.as_str())
+    }
+
+    pub fn managed_agent_generation(&self) -> Option<u64> {
+        self.managed_agent_definition
+            .as_ref()
+            .map(|definition| definition.generation)
+    }
+
+    pub fn managed_agent_argv(&self) -> Option<&[String]> {
+        self.managed_agent_definition
+            .as_ref()
+            .map(|definition| definition.argv.as_slice())
+    }
+
+    pub fn report_managed_agent_lifecycle(
+        &mut self,
+        generation: u64,
+        lifecycle: ManagedAgentLifecycle,
+    ) -> bool {
+        let Some(definition) = self.managed_agent_definition.as_mut() else {
+            return false;
+        };
+        if definition.generation != generation
+            || definition.lifecycle == lifecycle
+            || (matches!(
+                definition.lifecycle,
+                ManagedAgentLifecycle::Stopped | ManagedAgentLifecycle::StartFailed
+            ) && matches!(
+                lifecycle,
+                ManagedAgentLifecycle::Starting | ManagedAgentLifecycle::Running
+            ))
+        {
+            return false;
+        }
+        definition.lifecycle = lifecycle;
+        if matches!(
+            lifecycle,
+            ManagedAgentLifecycle::Stopped | ManagedAgentLifecycle::StartFailed
+        ) {
+            self.managed_agent = None;
+        }
+        true
+    }
+
+    pub fn mark_managed_agent_stopped(&mut self) -> bool {
+        let Some(definition) = self.managed_agent_definition.as_mut() else {
+            return false;
+        };
+        if definition.lifecycle == ManagedAgentLifecycle::Stopped {
+            return false;
+        }
+        definition.lifecycle = ManagedAgentLifecycle::Stopped;
+        self.managed_agent = None;
+        true
     }
 
     pub fn next_managed_agent_deadline(&self) -> Option<Instant> {
@@ -1973,6 +2097,13 @@ impl TerminalState {
     }
 
     pub fn reconcile_managed_agent_at(&mut self, now: Instant, process_exited: bool) -> bool {
+        if process_exited && self.managed_agent_definition.is_some() {
+            if let Some(definition) = self.managed_agent_definition.as_mut() {
+                definition.lifecycle = ManagedAgentLifecycle::Stopped;
+            }
+            self.managed_agent = None;
+            return true;
+        }
         let Some(managed) = self.managed_agent else {
             return false;
         };
@@ -1998,6 +2129,9 @@ impl TerminalState {
                     kind: managed.kind,
                     phase: ManagedAgentPhase::Active,
                 });
+                if let Some(definition) = self.managed_agent_definition.as_mut() {
+                    definition.lifecycle = ManagedAgentLifecycle::Running;
+                }
                 return true;
             }
             return false;
@@ -2025,6 +2159,9 @@ impl TerminalState {
                         kind: managed.kind,
                         phase: ManagedAgentPhase::Active,
                     });
+                    if let Some(definition) = self.managed_agent_definition.as_mut() {
+                        definition.lifecycle = ManagedAgentLifecycle::Running;
+                    }
                     return true;
                 }
                 if ready_after.is_some() {
@@ -2064,12 +2201,42 @@ impl TerminalState {
             kind,
             phase: ManagedAgentPhase::Active,
         });
+        self.managed_agent_definition = Some(ManagedAgentDefinition {
+            name: self.agent_name.clone().unwrap_or_default(),
+            kind,
+            argv: Vec::new(),
+            generation: 0,
+            lifecycle: ManagedAgentLifecycle::Running,
+        });
+    }
+
+    pub fn restore_stopped_managed_agent(
+        &mut self,
+        name: String,
+        kind: Agent,
+        argv: Vec<String>,
+        generation: u64,
+    ) {
+        self.set_agent_name(name);
+        self.agent_name_owner = Some(AgentNameOwner {
+            agent_label: crate::detect::agent_label(kind).to_string(),
+            session_ref: None,
+        });
+        self.managed_agent = None;
+        self.managed_agent_definition = Some(ManagedAgentDefinition {
+            name: self.agent_name.clone().unwrap_or_default(),
+            kind,
+            argv,
+            generation,
+            lifecycle: ManagedAgentLifecycle::Stopped,
+        });
     }
 
     pub fn clear_agent_name(&mut self) {
         self.agent_name = None;
         self.agent_name_owner = None;
         self.managed_agent = None;
+        self.managed_agent_definition = None;
     }
 
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
@@ -2270,7 +2437,11 @@ mod tests {
         assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), false));
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
         assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), true));
-        assert_eq!(terminal.agent_name, None);
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Stopped)
+        );
     }
 
     #[test]
@@ -2300,6 +2471,84 @@ mod tests {
         assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
         assert_eq!(timed_out.agent_name, None);
         assert_eq!(timed_out.managed_agent_kind(), None);
+    }
+
+    #[test]
+    fn managed_agent_process_exit_keeps_durable_definition_stopped() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.begin_managed_agent(
+            "otter".into(),
+            Agent::Pi,
+            now,
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+        assert!(terminal.reconcile_managed_agent_at(now, false));
+
+        assert!(terminal.reconcile_managed_agent_at(now, true));
+
+        assert_eq!(terminal.agent_name.as_deref(), Some("otter"));
+        assert_eq!(terminal.managed_agent_kind(), Some(Agent::Pi));
+        assert!(!terminal.managed_agent_interactive_ready());
+        assert!(!terminal.report_managed_agent_lifecycle(1, ManagedAgentLifecycle::Running));
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Stopped)
+        );
+    }
+
+    #[test]
+    fn managed_agent_rename_updates_durable_definition() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        terminal.begin_managed_agent(
+            "otter".into(),
+            Agent::Pi,
+            now,
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+
+        terminal.set_agent_name("reviewer".into());
+
+        assert_eq!(terminal.managed_agent_name(), Some("reviewer"));
+    }
+
+    #[test]
+    fn stale_managed_agent_generation_cannot_overwrite_current_lifecycle() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        let first = terminal.begin_managed_agent_with_argv(
+            "otter".into(),
+            Agent::Pi,
+            vec!["pi".into()],
+            now,
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+        terminal.mark_managed_agent_stopped();
+        let second = terminal.begin_managed_agent_with_argv(
+            "otter".into(),
+            Agent::Pi,
+            vec!["pi".into(), "--session".into(), "opaque".into()],
+            now,
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+
+        assert_eq!((first, second), (1, 2));
+        assert!(!terminal.report_managed_agent_lifecycle(first, ManagedAgentLifecycle::Stopped));
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Starting)
+        );
+        assert!(terminal.report_managed_agent_lifecycle(second, ManagedAgentLifecycle::Running));
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Running)
+        );
     }
 
     #[test]

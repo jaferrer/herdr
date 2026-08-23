@@ -274,7 +274,7 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]");
+        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--resume] [--timeout MS] [-- <agent-args...>]");
         return Ok(2);
     };
     let separator = args
@@ -284,6 +284,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let mut kind = None;
     let mut pane_id = None;
     let mut timeout_ms = None;
+    let mut mode = crate::api::schema::AgentStartMode::Start;
     let mut index = 1;
     while index < separator {
         match args[index].as_str() {
@@ -313,6 +314,10 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                     Err(exit_code) => return Ok(exit_code),
                 };
                 index += 2;
+            }
+            "--resume" => {
+                mode = crate::api::schema::AgentStartMode::Resume;
+                index += 1;
             }
             other => {
                 eprintln!("unknown option: {other}");
@@ -361,6 +366,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 name: name.clone(),
                 kind: kind.clone(),
                 pane_id: pane_id.clone(),
+                mode,
                 args: agent_args.clone(),
                 timeout_ms,
             }),
@@ -917,7 +923,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
-        "  herdr agent start <name> --kind KIND --pane ID [--timeout MS] [-- <agent-args...>]"
+        "  herdr agent start <name> --kind KIND --pane ID [--resume] [--timeout MS] [-- <agent-args...>]"
     );
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(

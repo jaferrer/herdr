@@ -283,6 +283,85 @@ pub(crate) fn handle_navigator_key(
     }
 }
 
+impl App {
+    pub(crate) fn handle_navigator_key_via_api(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Enter && self.resume_selected_navigator_managed_agent() {
+            return;
+        }
+        handle_navigator_key(&mut self.state, &self.terminal_runtimes, key);
+    }
+
+    fn resume_selected_navigator_managed_agent(&mut self) -> bool {
+        let Some(row) = self
+            .state
+            .navigator_rows_from(&self.terminal_runtimes)
+            .get(self.state.navigator.selected)
+            .cloned()
+        else {
+            return false;
+        };
+        let crate::app::state::NavigatorTarget::Pane {
+            ws_idx, pane_id, ..
+        } = row.target.clone()
+        else {
+            return false;
+        };
+        let Some(terminal_id) = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.terminal_id(pane_id))
+            .cloned()
+        else {
+            return false;
+        };
+        let Some(terminal) = self.state.terminals.get(&terminal_id) else {
+            return false;
+        };
+        if !matches!(
+            terminal.managed_agent_lifecycle(),
+            Some(
+                crate::terminal::ManagedAgentLifecycle::Stopped
+                    | crate::terminal::ManagedAgentLifecycle::StartFailed
+            )
+        ) {
+            return false;
+        }
+        let (Some(name), Some(kind), Some(public_pane_id)) = (
+            terminal.managed_agent_name().map(str::to_string),
+            terminal.managed_agent_kind(),
+            self.public_pane_id(ws_idx, pane_id),
+        ) else {
+            return true;
+        };
+        let previous_toast = self.state.toast.clone();
+        match self.start_agent(crate::api::schema::AgentStartParams {
+            name,
+            kind: crate::detect::agent_label(kind).to_string(),
+            pane_id: public_pane_id,
+            mode: crate::api::schema::AgentStartMode::Resume,
+            args: Vec::new(),
+            timeout_ms: None,
+        }) {
+            Ok(_) => {
+                self.state.focus_navigator_target(row.target);
+            }
+            Err(error) => {
+                let body = self.agent_start_error_body(error);
+                self.state.toast = Some(crate::app::state::ToastNotification {
+                    kind: crate::app::state::ToastKind::NeedsAttention,
+                    title: "agent resume failed".into(),
+                    context: body.message,
+                    position: None,
+                    target: None,
+                });
+                self.sync_toast_deadline(previous_toast);
+            }
+        }
+        true
+    }
+}
+
 pub(crate) fn insert_navigator_search_text(
     state: &mut AppState,
     terminal_runtimes: &crate::terminal::TerminalRuntimeRegistry,

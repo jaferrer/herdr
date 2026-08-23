@@ -228,6 +228,13 @@ pub fn dedupe_key(source: &str, agent: &str, session_ref: &AgentSessionRef) -> S
     )
 }
 
+pub fn is_available(session_ref: &AgentSessionRef) -> bool {
+    match session_ref.kind {
+        AgentSessionRefKind::Id => true,
+        AgentSessionRefKind::Path => std::fs::File::open(&session_ref.value).is_ok(),
+    }
+}
+
 pub(crate) fn is_official_agent_source(source: &str, agent: &str) -> bool {
     matches!(
         (source, agent),

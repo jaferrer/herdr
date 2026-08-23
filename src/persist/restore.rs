@@ -495,6 +495,28 @@ fn restore_tab(
         let saved_managed_agent = saved_pane
             .and_then(|pane| pane.managed_agent_kind.as_deref())
             .and_then(crate::detect::parse_canonical_agent_label);
+        let stopped_managed_agent = saved_pane.and_then(|pane| {
+            pane.managed_agent
+                .as_ref()
+                .and_then(|managed| {
+                    Some((
+                        managed.name.clone(),
+                        crate::detect::parse_canonical_agent_label(&managed.kind)?,
+                        managed.argv.clone(),
+                        managed.generation,
+                    ))
+                })
+                .or_else(|| {
+                    Some((
+                        pane.agent_name.clone()?,
+                        crate::detect::parse_canonical_agent_label(
+                            pane.managed_agent_kind.as_deref()?,
+                        )?,
+                        pane.launch_argv.clone().unwrap_or_default(),
+                        0,
+                    ))
+                })
+        });
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
         let saved_history =
@@ -528,6 +550,22 @@ fn restore_tab(
             .unwrap_or_default();
         let imported_runtime = old_pane_id.and_then(|old_id| imported_panes.remove(&old_id));
         let was_imported = imported_runtime.is_some();
+        if !was_imported {
+            if let Some((name, kind, argv, generation)) = stopped_managed_agent {
+                let terminal_id = TerminalId::alloc();
+                let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
+                if let Some(label) = saved_label {
+                    terminal.set_manual_label(label);
+                }
+                if let Some(session) = restored_agent_session {
+                    terminal.set_persisted_agent_session(session);
+                }
+                terminal.restore_stopped_managed_agent(name, kind, argv, generation);
+                panes.insert(*id, PaneState::new(terminal_id));
+                terminals.push(terminal);
+                continue;
+            }
+        }
         let pending_native_agent_restore = if was_imported {
             None
         } else {
@@ -1168,7 +1206,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_carries_persisted_agent_session_metadata() {
+    async fn old_managed_agent_snapshot_restores_stopped_without_auto_resume() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -1190,12 +1228,13 @@ mod tests {
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
-                            managed_agent_kind: Some("opencode".into()),
+                            managed_agent_kind: Some("pi".into()),
+                            managed_agent: None,
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                                source: "herdr:opencode".into(),
-                                agent: "opencode".into(),
-                                kind: crate::agent_resume::AgentSessionRefKind::Id,
-                                value: "opencode-session".into(),
+                                source: "herdr:pi".into(),
+                                agent: "pi".into(),
+                                kind: crate::agent_resume::AgentSessionRefKind::Path,
+                                value: test_session_path("pi-session.jsonl"),
                             }),
                             launch_argv: None,
                         },
@@ -1214,7 +1253,7 @@ mod tests {
         };
         let (events, _event_rx) = mpsc::channel(4);
 
-        let (_workspaces, terminals, _runtimes) = restore(
+        let (_workspaces, terminals, runtimes) = restore(
             &snapshot,
             None,
             24,
@@ -1222,7 +1261,7 @@ mod tests {
             0,
             test_restore_shell(),
             crate::config::ShellModeConfig::NonLogin,
-            false,
+            true,
             events,
             Arc::new(Notify::new()),
             Arc::new(RenderSignal::new()),
@@ -1232,19 +1271,28 @@ mod tests {
             .values()
             .next()
             .expect("restored terminal should exist");
-        assert!(
-            !terminal.respawn_shell_on_exit,
-            "agent sessions should not use native restore lifecycle when resume_agents_on_restore is disabled"
+        assert!(runtimes.is_empty(), "stopped agents must not launch a PTY");
+        assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(
+            terminal.managed_agent_kind(),
+            Some(crate::detect::Agent::Pi)
         );
-        assert_eq!(terminal.agent_name, None);
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(crate::terminal::ManagedAgentLifecycle::Stopped)
+        );
+        assert!(terminal.pending_agent_resume_plan.is_none());
         assert_eq!(terminal.manual_label.as_deref(), Some("reviewer"));
         let session = terminal
             .persisted_agent_session
             .as_ref()
             .expect("persisted agent session should survive restore");
-        assert_eq!(session.source, "herdr:opencode");
-        assert_eq!(session.agent, "opencode");
-        assert_eq!(session.session_ref.value, "opencode-session");
+        assert_eq!(session.source, "herdr:pi");
+        assert_eq!(session.agent, "pi");
+        assert_eq!(
+            session.session_ref.value,
+            test_session_path("pi-session.jsonl")
+        );
     }
 
     #[tokio::test]
@@ -1277,6 +1325,7 @@ mod tests {
                                 label: None,
                                 agent_name: None,
                                 managed_agent_kind: None,
+                                managed_agent: None,
                                 agent_session: None,
                                 launch_argv: None,
                             },
@@ -1288,6 +1337,7 @@ mod tests {
                                 label: None,
                                 agent_name: None,
                                 managed_agent_kind: None,
+                                managed_agent: None,
                                 agent_session: None,
                                 launch_argv: None,
                             },
@@ -1341,6 +1391,7 @@ mod tests {
                     label: None,
                     agent_name: None,
                     managed_agent_kind: None,
+                    managed_agent: None,
                     agent_session: None,
                     launch_argv: None,
                 },
@@ -1351,6 +1402,7 @@ mod tests {
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
             managed_agent_kind: None,
+            managed_agent: None,
             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: "herdr:codex".into(),
                 agent: "codex".into(),
@@ -1502,6 +1554,7 @@ mod tests {
                             label: None,
                             agent_name: None,
                             managed_agent_kind: None,
+                            managed_agent: None,
                             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                                 source: "herdr:codex".into(),
                                 agent: "codex".into(),
@@ -1668,6 +1721,7 @@ mod tests {
                 label: None,
                 agent_name: None,
                 managed_agent_kind: None,
+                managed_agent: None,
                 agent_session: None,
                 launch_argv: None,
             },

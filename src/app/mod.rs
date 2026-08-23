@@ -1948,7 +1948,7 @@ impl App {
                 self.handle_settings_key(key_event);
             }
             Mode::Navigator => {
-                input::handle_navigator_key(&mut self.state, &self.terminal_runtimes, key_event);
+                self.handle_navigator_key_via_api(key_event);
             }
             Mode::OverviewGrid => {
                 self.state.handle_overview_grid_key(key_event);
@@ -4739,6 +4739,7 @@ mod tests {
                 name: "worker".into(),
                 kind: "pi".into(),
                 pane_id,
+                mode: Default::default(),
                 args: Vec::new(),
                 timeout_ms: Some(1_000),
             }),
@@ -4748,6 +4749,236 @@ mod tests {
         assert_eq!(response["error"]["code"], "agent_pane_unavailable");
         assert_eq!(app.state.workspaces[0].tabs[0].layout.pane_count(), 1);
         assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
+    }
+
+    #[tokio::test]
+    async fn explicit_agent_start_resume_reuses_stopped_pi_session_once() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("agent-resume");
+        let root = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(root).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let pane_id = app.pane_info(0, root).unwrap().pane_id;
+        let session_path = std::env::temp_dir().join(format!(
+            "herdr-pi-resume-{}-{}.jsonl",
+            std::process::id(),
+            root.raw()
+        ));
+        std::fs::write(&session_path, "{}\n").unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_stopped_managed_agent(
+            "otter".into(),
+            crate::detect::Agent::Pi,
+            vec!["pi".into()],
+            1,
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(
+                session_path.display().to_string(),
+            )
+            .unwrap(),
+        });
+        let request_json = serde_json::json!({
+            "id": "req_agent_resume",
+            "method": "agent.start",
+            "params": {
+                "name": "otter",
+                "kind": "pi",
+                "pane_id": pane_id,
+                "mode": "resume"
+            }
+        });
+
+        let request = serde_json::from_value(request_json.clone()).unwrap();
+        let response: serde_json::Value =
+            serde_json::from_str(&app.handle_api_request(request)).unwrap();
+
+        assert_eq!(response["result"]["type"], "agent_started");
+        assert_eq!(
+            response["result"]["argv"],
+            serde_json::json!(["pi", "--session", session_path.display().to_string()])
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_generation(),
+            Some(2)
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id]
+                .persisted_agent_session
+                .as_ref()
+                .map(|session| session.session_ref.value.as_str()),
+            Some(session_path.to_str().unwrap())
+        );
+        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
+
+        let duplicate = serde_json::from_value(request_json).unwrap();
+        let duplicate: serde_json::Value =
+            serde_json::from_str(&app.handle_api_request(duplicate)).unwrap();
+        assert_eq!(duplicate["error"]["code"], "agent_pane_busy");
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        std::fs::remove_file(session_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn navigator_enter_resumes_stopped_managed_pane() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("navigator-resume");
+        let root = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(root).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.mode = Mode::Navigator;
+        app.state.view.terminal_area = ratatui::layout::Rect::new(0, 0, 80, 24);
+        let session_path = std::env::temp_dir().join(format!(
+            "herdr-pi-navigator-resume-{}-{}.jsonl",
+            std::process::id(),
+            root.raw()
+        ));
+        std::fs::write(&session_path, "{}\n").unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_stopped_managed_agent(
+            "otter".into(),
+            crate::detect::Agent::Pi,
+            vec!["pi".into()],
+            4,
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(
+                session_path.display().to_string(),
+            )
+            .unwrap(),
+        });
+        app.state
+            .navigator
+            .expanded_workspaces
+            .insert(app.state.workspaces[0].id.clone());
+        let rows = app.state.navigator_rows_from(&app.terminal_runtimes);
+        let selected = rows
+            .iter()
+            .position(|row| {
+                matches!(
+                    row.target,
+                    crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == root
+                )
+            })
+            .unwrap();
+        assert!(rows[selected].meta.contains("stopped"));
+        app.state.navigator.selected = selected;
+
+        app.handle_non_terminal_key_headless(crate::input::TerminalKey::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::empty(),
+        ));
+
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_generation(),
+            Some(5)
+        );
+        assert!(app.terminal_runtimes.get(&terminal_id).is_some());
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        std::fs::remove_file(session_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_resume_rejects_missing_and_invalid_session_without_launching() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("invalid-resume");
+        let root = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(root).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let pane_id = app.pane_info(0, root).unwrap().pane_id;
+        let missing = std::env::temp_dir().join(format!(
+            "herdr-missing-pi-session-{}-{}.jsonl",
+            std::process::id(),
+            root.raw()
+        ));
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_stopped_managed_agent(
+            "otter".into(),
+            crate::detect::Agent::Pi,
+            vec!["pi".into()],
+            7,
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(missing.display().to_string())
+                .unwrap(),
+        });
+        let request = |id: &str| {
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "method": "agent.start",
+                "params": {
+                    "name": "otter",
+                    "kind": "pi",
+                    "pane_id": pane_id,
+                    "mode": "resume"
+                }
+            }))
+            .unwrap()
+        };
+
+        let missing_response: serde_json::Value =
+            serde_json::from_str(&app.handle_api_request(request("missing"))).unwrap();
+        assert_eq!(
+            missing_response["error"]["code"],
+            "agent_resume_session_missing"
+        );
+        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_generation(),
+            Some(7)
+        );
+
+        let invalid_path = std::env::temp_dir().join(format!(
+            "herdr-invalid-pi-session-{}-{}.jsonl",
+            std::process::id(),
+            root.raw()
+        ));
+        std::fs::write(&invalid_path, "{}\n").unwrap();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+                source: "custom:pi".into(),
+                agent: "pi".into(),
+                session_ref: crate::agent_resume::AgentSessionRef::path(
+                    invalid_path.display().to_string(),
+                )
+                .unwrap(),
+            });
+
+        let invalid_response: serde_json::Value =
+            serde_json::from_str(&app.handle_api_request(request("invalid"))).unwrap();
+        assert_eq!(
+            invalid_response["error"]["code"],
+            "agent_resume_session_invalid"
+        );
+        assert!(app.terminal_runtimes.get(&terminal_id).is_none());
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_generation(),
+            Some(7)
+        );
+        std::fs::remove_file(invalid_path).unwrap();
     }
 
     #[tokio::test]
@@ -4781,6 +5012,7 @@ mod tests {
                 name: "worker".into(),
                 kind: "pi".into(),
                 pane_id: pane_id.clone(),
+                mode: Default::default(),
                 args: Vec::new(),
                 timeout_ms: Some(4_000),
             }),

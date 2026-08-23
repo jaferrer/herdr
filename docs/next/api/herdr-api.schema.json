@@ -757,6 +757,42 @@
           ],
           "type": "string"
         },
+        "PaneCursorInfo": {
+          "description": "Cursor position and presentation within the pane's terminal grid.",
+          "properties": {
+            "shape": {
+              "default": 0,
+              "description": "DECSCUSR shape parameter: 0 default, 1-6 explicit shape.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "x": {
+              "description": "Column offset, zero-based.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "description": "Row offset, zero-based.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "visible"
+          ],
+          "type": "object"
+        },
         "PaneInfo": {
           "properties": {
             "agent": {
@@ -777,6 +813,16 @@
             },
             "agent_status": {
               "$ref": "#/schemas/event/$defs/AgentStatus"
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/PaneCursorInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "cwd": {
               "type": [
@@ -1332,6 +1378,13 @@
           ],
           "type": "object"
         },
+        "AgentStartMode": {
+          "enum": [
+            "start",
+            "resume"
+          ],
+          "type": "string"
+        },
         "AgentStartParams": {
           "properties": {
             "args": {
@@ -1342,6 +1395,9 @@
             },
             "kind": {
               "type": "string"
+            },
+            "mode": {
+              "$ref": "#/schemas/request/$defs/AgentStartMode"
             },
             "name": {
               "type": "string"
@@ -2121,7 +2177,8 @@
             "cursor",
             "mastracode",
             "antigravity_cli",
-            "grok"
+            "grok",
+            "jcode"
           ],
           "type": "string"
         },
@@ -2853,7 +2910,19 @@
             "agent": {
               "type": "string"
             },
+            "agent_session_icon": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "agent_session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "agent_session_name": {
               "type": [
                 "string",
                 "null"
@@ -6155,6 +6224,14 @@
             "interactive_ready": {
               "type": "boolean"
             },
+            "launch_generation": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "launch_pending": {
               "type": "boolean"
             },
@@ -6166,6 +6243,16 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "process_lifecycle": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/ManagedAgentLifecycle"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "revision": {
               "format": "uint64",
@@ -7177,7 +7264,8 @@
             "cursor",
             "mastracode",
             "antigravity_cli",
-            "grok"
+            "grok",
+            "jcode"
           ],
           "type": "string"
         },
@@ -7300,6 +7388,15 @@
             }
           ]
         },
+        "ManagedAgentLifecycle": {
+          "enum": [
+            "starting",
+            "running",
+            "stopped",
+            "start_failed"
+          ],
+          "type": "string"
+        },
         "NotificationShowReason": {
           "enum": [
             "shown",
@@ -7309,6 +7406,42 @@
             "busy"
           ],
           "type": "string"
+        },
+        "PaneCursorInfo": {
+          "description": "Cursor position and presentation within the pane's terminal grid.",
+          "properties": {
+            "shape": {
+              "default": 0,
+              "description": "DECSCUSR shape parameter: 0 default, 1-6 explicit shape.",
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "x": {
+              "description": "Column offset, zero-based.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "y": {
+              "description": "Row offset, zero-based.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "x",
+            "y",
+            "visible"
+          ],
+          "type": "object"
         },
         "PaneDirection": {
           "enum": [
@@ -7411,6 +7544,16 @@
             },
             "agent_status": {
               "$ref": "#/schemas/success_response/$defs/AgentStatus"
+            },
+            "cursor": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/PaneCursorInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "cwd": {
               "type": [

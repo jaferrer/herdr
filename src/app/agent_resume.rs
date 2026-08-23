@@ -63,6 +63,7 @@ impl App {
                 rows,
                 cols,
                 allow_empty_theme,
+                None,
             );
         }
 
@@ -192,6 +193,7 @@ impl App {
             rows,
             cols,
             allow_empty_theme,
+            None,
         );
         if changed {
             self.schedule_session_save();
@@ -202,7 +204,7 @@ impl App {
         changed
     }
 
-    fn start_pending_agent_resume(
+    pub(super) fn start_pending_agent_resume(
         &mut self,
         pane_id: crate::layout::PaneId,
         terminal_id: crate::terminal::TerminalId,
@@ -211,6 +213,7 @@ impl App {
         rows: u16,
         cols: u16,
         allow_empty_theme: bool,
+        generation: Option<u64>,
     ) -> bool {
         let host_terminal_theme = self.state.host_terminal_theme;
         if host_terminal_theme.is_empty() && !allow_empty_theme {
@@ -262,6 +265,10 @@ impl App {
                 return false;
             }
         };
+
+        if let Some(generation) = generation {
+            runtime.set_managed_agent_generation(generation);
+        }
 
         let mut input = resume_command;
         input.push('\r');

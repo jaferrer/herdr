@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 
 use super::{terminal_targets::TerminalTargetError, App};
-use crate::api::schema::AgentStartParams;
+use crate::api::schema::{AgentStartMode, AgentStartParams};
 
 const DEFAULT_AGENT_START_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_AGENT_START_TIMEOUT: Duration = Duration::from_secs(300);
@@ -146,6 +146,9 @@ impl App {
         &mut self,
         params: AgentStartParams,
     ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), AgentStartError> {
+        if params.mode == AgentStartMode::Resume {
+            return self.resume_agent(params);
+        }
         let name = params.name;
         if !valid_agent_name(&name) {
             return Err(AgentStartError::InvalidName);
@@ -212,7 +215,15 @@ impl App {
             .terminals
             .get_mut(&terminal_id)
             .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
-        terminal.begin_managed_agent(name.clone(), kind, now, AGENT_START_SETTLE_DELAY, timeout);
+        let _generation = terminal.begin_managed_agent_with_argv(
+            name.clone(),
+            kind,
+            argv.clone(),
+            now,
+            AGENT_START_SETTLE_DELAY,
+            timeout,
+        );
+        runtime.set_managed_agent_generation(_generation);
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             terminal.clear_agent_name();
             return Err(AgentStartError::InputFailed(err.to_string()));
@@ -224,6 +235,140 @@ impl App {
             .agent_info(ws_idx, pane_id)
             .ok_or(AgentStartError::TargetUnavailable(params.pane_id))?;
         Ok((agent, argv))
+    }
+
+    fn resume_agent(
+        &mut self,
+        params: AgentStartParams,
+    ) -> Result<(crate::api::schema::AgentInfo, Vec<String>), AgentStartError> {
+        if !valid_agent_name(&params.name) {
+            return Err(AgentStartError::InvalidName);
+        }
+        let Some(kind) = crate::detect::parse_agent_label(&params.kind) else {
+            return Err(AgentStartError::UnsupportedKind(params.kind));
+        };
+        if !params.args.is_empty() {
+            return Err(AgentStartError::InvalidArgument);
+        }
+        let Some((ws_idx, pane_id)) = self.parse_current_public_pane_id(&params.pane_id) else {
+            return Err(AgentStartError::TargetNotFound(params.pane_id));
+        };
+        let terminal_id = self
+            .state
+            .workspaces
+            .get(ws_idx)
+            .and_then(|workspace| workspace.terminal_id(pane_id))
+            .cloned()
+            .ok_or_else(|| AgentStartError::TargetNotFound(params.pane_id.clone()))?;
+        if self.terminal_runtimes.get(&terminal_id).is_some() {
+            return Err(AgentStartError::TargetBusy(params.pane_id));
+        }
+        let terminal = self
+            .state
+            .terminals
+            .get(&terminal_id)
+            .ok_or_else(|| AgentStartError::TargetNotFound(params.pane_id.clone()))?;
+        if terminal.managed_agent_name() != Some(params.name.as_str())
+            || terminal.managed_agent_kind() != Some(kind)
+            || !matches!(
+                terminal.managed_agent_lifecycle(),
+                Some(
+                    crate::terminal::ManagedAgentLifecycle::Stopped
+                        | crate::terminal::ManagedAgentLifecycle::StartFailed
+                )
+            )
+        {
+            return Err(AgentStartError::DefinitionMismatch);
+        }
+        let session = terminal
+            .persisted_agent_session
+            .clone()
+            .ok_or(AgentStartError::MissingSession)?;
+        if crate::detect::parse_agent_label(&session.agent) != Some(kind) {
+            return Err(AgentStartError::InvalidSession);
+        }
+        let plan = crate::agent_resume::plan(&session.source, &session.agent, &session.session_ref)
+            .ok_or(AgentStartError::InvalidSession)?;
+        if !crate::agent_resume::is_available(&session.session_ref) {
+            return Err(AgentStartError::MissingSession);
+        }
+        if self.state.terminals.iter().any(|(other_id, other)| {
+            other_id != &terminal_id
+                && other
+                    .persisted_agent_session
+                    .as_ref()
+                    .is_some_and(|other_session| {
+                        crate::agent_resume::dedupe_key(
+                            &other_session.source,
+                            &other_session.agent,
+                            &other_session.session_ref,
+                        ) == plan.dedupe_key
+                    })
+                && (self.terminal_runtimes.get(other_id).is_some()
+                    || matches!(
+                        other.managed_agent_lifecycle(),
+                        Some(
+                            crate::terminal::ManagedAgentLifecycle::Starting
+                                | crate::terminal::ManagedAgentLifecycle::Running
+                        )
+                    ))
+        }) {
+            return Err(AgentStartError::DuplicateSession);
+        }
+        let timeout = Duration::from_millis(
+            params
+                .timeout_ms
+                .unwrap_or(DEFAULT_AGENT_START_TIMEOUT.as_millis() as u64),
+        );
+        if timeout <= AGENT_START_SETTLE_DELAY || timeout > MAX_AGENT_START_TIMEOUT {
+            return Err(AgentStartError::InvalidTimeout);
+        }
+        let (rows, cols) = self
+            .state
+            .view
+            .pane_infos
+            .iter()
+            .find(|info| info.id == pane_id)
+            .map(|info| (info.inner_rect.height, info.inner_rect.width))
+            .unwrap_or_else(|| self.state.estimate_pane_size());
+        let cwd = self.state.terminals[&terminal_id].cwd.clone();
+        let generation = self
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("resolved terminal should remain available")
+            .begin_managed_agent_with_argv(
+                params.name,
+                kind,
+                plan.argv.clone(),
+                Instant::now(),
+                AGENT_START_SETTLE_DELAY,
+                timeout,
+            );
+        if !self.start_pending_agent_resume(
+            pane_id,
+            terminal_id.clone(),
+            cwd,
+            plan.clone(),
+            rows,
+            cols,
+            true,
+            Some(generation),
+        ) {
+            if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                terminal.report_managed_agent_lifecycle(
+                    generation,
+                    crate::terminal::ManagedAgentLifecycle::StartFailed,
+                );
+            }
+            return Err(AgentStartError::ResumeFailed);
+        }
+        self.state.mark_session_dirty();
+        self.schedule_session_save();
+        let agent = self
+            .agent_info(ws_idx, pane_id)
+            .ok_or(AgentStartError::TargetUnavailable(params.pane_id))?;
+        Ok((agent, plan.argv))
     }
 
     pub(super) fn agent_start_error_body(
@@ -262,6 +407,26 @@ impl App {
             AgentStartError::InputFailed(message) => crate::api::schema::ErrorBody {
                 code: "agent_start_input_failed".into(),
                 message,
+            },
+            AgentStartError::DefinitionMismatch => crate::api::schema::ErrorBody {
+                code: "agent_resume_definition_mismatch".into(),
+                message: "resume name and kind must match the stopped managed agent".into(),
+            },
+            AgentStartError::MissingSession => crate::api::schema::ErrorBody {
+                code: "agent_resume_session_missing".into(),
+                message: "managed agent session reference is missing or unreadable".into(),
+            },
+            AgentStartError::InvalidSession => crate::api::schema::ErrorBody {
+                code: "agent_resume_session_invalid".into(),
+                message: "managed agent session reference is invalid".into(),
+            },
+            AgentStartError::DuplicateSession => crate::api::schema::ErrorBody {
+                code: "agent_session_active".into(),
+                message: "managed agent session is already active in another pane".into(),
+            },
+            AgentStartError::ResumeFailed => crate::api::schema::ErrorBody {
+                code: "agent_resume_failed".into(),
+                message: "failed to launch the stopped managed agent".into(),
             },
             AgentStartError::DuplicateName { name, candidates } => crate::api::schema::ErrorBody {
                 code: "agent_name_taken".into(),
@@ -389,6 +554,8 @@ impl App {
             focused: pane.focused,
             launch_pending: terminal.managed_agent_launch_pending(),
             interactive_ready: terminal.managed_agent_interactive_ready(),
+            process_lifecycle: terminal.managed_agent_lifecycle(),
+            launch_generation: terminal.managed_agent_generation(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
             cwd: pane.cwd,
             foreground_cwd: pane.foreground_cwd,
@@ -449,6 +616,11 @@ pub(super) enum AgentStartError {
     TargetBusy(String),
     TargetUnavailable(String),
     InputFailed(String),
+    DefinitionMismatch,
+    MissingSession,
+    InvalidSession,
+    DuplicateSession,
+    ResumeFailed,
     DuplicateName {
         name: String,
         candidates: Vec<crate::api::schema::AgentInfo>,
