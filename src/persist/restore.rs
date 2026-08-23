@@ -514,7 +514,10 @@ fn restore_tab(
                             pane.managed_agent_kind.as_deref()?,
                         )?,
                         pane.launch_argv.clone().unwrap_or_default(),
-                        0,
+                        // Legacy snapshots predate generations; 0 is the "no managed
+                        // generation" sentinel, so start where a first launch would
+                        // or death events look stale and get dropped.
+                        1,
                         crate::terminal::ManagedAgentLifecycle::Stopped,
                     ))
                 })
@@ -1295,6 +1298,11 @@ mod tests {
             Some(crate::terminal::ManagedAgentLifecycle::Stopped)
         );
         assert!(terminal.pending_agent_resume_plan.is_none());
+        assert_ne!(
+            terminal.managed_agent_generation(),
+            Some(0),
+            "0 is the no-managed-generation sentinel; death events would look stale"
+        );
         assert_eq!(terminal.manual_label.as_deref(), Some("reviewer"));
         let session = terminal
             .persisted_agent_session
