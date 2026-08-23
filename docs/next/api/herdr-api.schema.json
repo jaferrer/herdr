@@ -3000,6 +3000,16 @@
             },
             "source": {
               "type": "string"
+            },
+            "task_provenance": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/request/$defs/TaskProvenance"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [

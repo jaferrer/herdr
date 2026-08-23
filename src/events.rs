@@ -96,6 +96,7 @@ pub enum AppEvent {
         pane_id: PaneId,
         source: String,
         agent_label: String,
+        task_provenance: Option<crate::terminal::TaskProvenance>,
         seq: Option<u64>,
         session_ref: Option<crate::agent_resume::AgentSessionRef>,
         session_start_source: Option<String>,

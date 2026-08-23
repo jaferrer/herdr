@@ -2875,6 +2875,7 @@ impl AppState {
                 pane_id,
                 source,
                 agent_label,
+                task_provenance,
                 seq,
                 session_ref,
                 session_start_source,
@@ -2889,10 +2890,14 @@ impl AppState {
                         seq,
                         session_start_source,
                     );
-                    if mutation.is_some()
-                        && (agent_session_name.is_some() || agent_session_icon.is_some())
-                    {
-                        terminal.set_agent_session_display(agent_session_name, agent_session_icon);
+                    if mutation.is_some() {
+                        if let Some(task_provenance) = task_provenance {
+                            terminal.set_task_provenance(Some(task_provenance));
+                        }
+                        if agent_session_name.is_some() || agent_session_icon.is_some() {
+                            terminal
+                                .set_agent_session_display(agent_session_name, agent_session_icon);
+                        }
                     }
                     mutation
                 })

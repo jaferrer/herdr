@@ -478,7 +478,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     }
 }
 
-fn task_provenance_from_options(
+pub(super) fn task_provenance_from_options(
     task_id: Option<String>,
     parent_task_id: Option<String>,
     spawn_kind: Option<String>,
@@ -1051,6 +1051,23 @@ mod tests {
                 Some(1),
             ),
             Err("--parent-task-id requires --task-id")
+        );
+    }
+
+    #[test]
+    fn task_provenance_requires_spawn_kind_and_generation() {
+        assert_eq!(
+            super::task_provenance_from_options(Some("task".into()), None, None, Some(1)),
+            Err("--spawn-kind is required when supplying task provenance")
+        );
+        assert_eq!(
+            super::task_provenance_from_options(
+                Some("task".into()),
+                None,
+                Some("root".into()),
+                None,
+            ),
+            Err("--generation is required when supplying task provenance")
         );
     }
 }

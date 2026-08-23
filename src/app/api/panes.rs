@@ -1280,6 +1280,7 @@ impl App {
             ),
             source: params.source,
             agent_label,
+            task_provenance: params.task_provenance,
             seq: params.seq,
             session_start_source: crate::agent_resume::normalize_session_start_source(
                 params.session_start_source,
@@ -1928,6 +1929,42 @@ mod tests {
         (app, public_pane_id)
     }
 
+    fn report_agent_session(
+        app: &mut App,
+        pane_id: &str,
+        session_id: &str,
+        seq: u64,
+        session_start_source: Option<&str>,
+        task_provenance: Option<serde_json::Value>,
+    ) {
+        let response = app.handle_api_request(
+            serde_json::from_value(serde_json::json!({
+                "id": "report-session",
+                "method": "pane.report_agent_session",
+                "params": {
+                    "pane_id": pane_id,
+                    "source": "herdr:codex",
+                    "agent": "codex",
+                    "seq": seq,
+                    "agent_session_id": session_id,
+                    "session_start_source": session_start_source,
+                    "task_provenance": task_provenance
+                }
+            }))
+            .unwrap(),
+        );
+        let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(response.result, ResponseResult::Ok {});
+    }
+
+    fn pane_json(app: &mut App, pane_id: String) -> serde_json::Value {
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "get-pane".into(),
+            method: crate::api::schema::Method::PaneGet(PaneTarget { pane_id }),
+        });
+        serde_json::from_str(&response).unwrap()
+    }
+
     #[test]
     fn pane_input_set_changes_only_the_target_pane() {
         let (mut app, public_pane_id) = app_with_test_workspace();
@@ -1956,6 +1993,129 @@ mod tests {
                 .unwrap()
                 .right_click_passthrough
         );
+    }
+
+    #[test]
+    fn accepted_session_report_applies_task_provenance() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        let provenance = serde_json::json!({
+            "task_id": "task-child",
+            "parent_task_id": "task-parent",
+            "spawn_kind": "fork",
+            "generation": 3
+        });
+
+        report_agent_session(
+            &mut app,
+            &pane_id,
+            "codex-session",
+            1,
+            None,
+            Some(provenance.clone()),
+        );
+
+        let response = pane_json(&mut app, pane_id);
+        assert_eq!(response["result"]["pane"]["task_provenance"], provenance);
+    }
+
+    #[test]
+    fn replacement_session_report_applies_provenance_after_identity_adoption() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        report_agent_session(
+            &mut app,
+            &pane_id,
+            "old-session",
+            1,
+            None,
+            Some(serde_json::json!({
+                "task_id": "old-task",
+                "spawn_kind": "root",
+                "generation": 0
+            })),
+        );
+        let replacement = serde_json::json!({
+            "task_id": "new-task",
+            "parent_task_id": "parent-task",
+            "spawn_kind": "fork",
+            "generation": 1
+        });
+
+        report_agent_session(
+            &mut app,
+            &pane_id,
+            "new-session",
+            2,
+            Some("startup"),
+            Some(replacement.clone()),
+        );
+
+        let response = pane_json(&mut app, pane_id);
+        assert_eq!(
+            response["result"]["pane"]["agent_session"]["value"],
+            "new-session"
+        );
+        assert_eq!(response["result"]["pane"]["task_provenance"], replacement);
+    }
+
+    #[test]
+    fn superseded_session_report_does_not_apply_provenance() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        let current = serde_json::json!({
+            "task_id": "current-task",
+            "spawn_kind": "root",
+            "generation": 0
+        });
+        report_agent_session(
+            &mut app,
+            &pane_id,
+            "current-session",
+            2,
+            None,
+            Some(current.clone()),
+        );
+
+        report_agent_session(
+            &mut app,
+            &pane_id,
+            "stale-session",
+            1,
+            Some("new"),
+            Some(serde_json::json!({
+                "task_id": "stale-task",
+                "spawn_kind": "root",
+                "generation": 0
+            })),
+        );
+
+        let response = pane_json(&mut app, pane_id);
+        assert_eq!(
+            response["result"]["pane"]["agent_session"]["value"],
+            "current-session"
+        );
+        assert_eq!(response["result"]["pane"]["task_provenance"], current);
+    }
+
+    #[test]
+    fn session_report_without_provenance_preserves_existing_provenance() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        let provenance = serde_json::json!({
+            "task_id": "current-task",
+            "spawn_kind": "root",
+            "generation": 0
+        });
+        report_agent_session(
+            &mut app,
+            &pane_id,
+            "current-session",
+            1,
+            None,
+            Some(provenance.clone()),
+        );
+
+        report_agent_session(&mut app, &pane_id, "current-session", 2, None, None);
+
+        let response = pane_json(&mut app, pane_id);
+        assert_eq!(response["result"]["pane"]["task_provenance"], provenance);
     }
 
     fn app_with_send_key_runtime(

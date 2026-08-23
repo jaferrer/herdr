@@ -714,6 +714,27 @@ fn report_agent_session_command() -> Command {
         .arg(option("agent-session-id", "ID"))
         .arg(path_option("agent-session-path", "PATH"))
         .arg(option("session-start-source", "SOURCE"))
+        .arg(
+            option("task-id", "ID")
+                .requires_all(["spawn-kind", "generation"])
+                .help("Conceptual task identity"),
+        )
+        .arg(
+            option("parent-task-id", "ID")
+                .requires("task-id")
+                .help("Parent conceptual task identity; omit for a root task"),
+        )
+        .arg(
+            option("spawn-kind", "KIND")
+                .requires("task-id")
+                .help("Conceptual task spawn relationship"),
+        )
+        .arg(
+            option("generation", "N")
+                .requires("task-id")
+                .value_parser(clap::value_parser!(u64))
+                .help("Conceptual task generation"),
+        )
 }
 
 fn release_agent_command() -> Command {
@@ -1359,6 +1380,18 @@ mod tests {
         assert!(agent_start
             .get_arguments()
             .any(|arg| arg.get_id() == "agent_args"));
+    }
+
+    #[test]
+    fn spec_models_report_agent_session_task_provenance() {
+        let cmd = super::command();
+        let report = command_path(&cmd, &["pane", "report-agent-session"]);
+        for provenance in ["task-id", "parent-task-id", "spawn-kind", "generation"] {
+            assert!(
+                has_option(report, provenance),
+                "missing provenance option --{provenance}"
+            );
+        }
     }
 
     fn long_help(path: &[&str]) -> String {

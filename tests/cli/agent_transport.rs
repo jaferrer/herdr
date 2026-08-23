@@ -1,6 +1,114 @@
 use super::harness::*;
 
 #[test]
+fn pane_report_agent_session_reuses_task_provenance_validation() {
+    let socket_path = unique_test_dir().join("missing.sock");
+    for (options, expected) in [
+        (
+            &[
+                "--parent-task-id",
+                "parent",
+                "--spawn-kind",
+                "fork",
+                "--generation",
+                "1",
+            ][..],
+            "--parent-task-id requires --task-id",
+        ),
+        (
+            &["--task-id", "task", "--generation", "1"][..],
+            "--spawn-kind is required when supplying task provenance",
+        ),
+        (
+            &["--task-id", "task", "--spawn-kind", "root"][..],
+            "--generation is required when supplying task provenance",
+        ),
+    ] {
+        let mut args = vec![
+            "pane",
+            "report-agent-session",
+            "w1:p1",
+            "--source",
+            "herdr:codex",
+            "--agent",
+            "codex",
+            "--agent-session-id",
+            "session",
+        ];
+        args.extend_from_slice(options);
+
+        let reported = run_cli(&socket_path, &args);
+
+        assert_eq!(reported.status.code(), Some(2));
+        assert_eq!(String::from_utf8_lossy(&reported.stderr).trim(), expected);
+    }
+}
+
+#[test]
+fn pane_report_agent_session_sends_task_provenance() {
+    let base = unique_test_dir();
+    fs::create_dir_all(&base).unwrap();
+    let socket_path = base.join("herdr.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+
+    let server = thread::spawn(move || {
+        let (mut stream, line) = accept_fake_cli_operation(&listener);
+        let report: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(report["method"], "pane.report_agent_session");
+        assert_eq!(
+            report["params"]["task_provenance"],
+            serde_json::json!({
+                "task_id": "task-child",
+                "parent_task_id": "task-parent",
+                "spawn_kind": "fork",
+                "generation": 7
+            })
+        );
+        writeln!(
+            stream,
+            "{}",
+            serde_json::json!({
+                "id": report["id"],
+                "result": { "type": "ok" }
+            })
+        )
+        .unwrap();
+        stream.flush().unwrap();
+    });
+
+    let reported = run_cli(
+        &socket_path,
+        &[
+            "pane",
+            "report-agent-session",
+            "w1:p1",
+            "--source",
+            "herdr:codex",
+            "--agent",
+            "codex",
+            "--agent-session-id",
+            "session",
+            "--task-id",
+            "task-child",
+            "--parent-task-id",
+            "task-parent",
+            "--spawn-kind",
+            "fork",
+            "--generation",
+            "7",
+        ],
+    );
+    assert!(
+        reported.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&reported.stderr)
+    );
+
+    server.join().unwrap();
+    cleanup_test_base(&base);
+}
+
+#[test]
 fn agent_start_sends_task_provenance() {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();

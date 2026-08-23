@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- `agent start` now accepts optional conceptual task provenance, and agent query JSON exposes it for parent-child orchestration.
+- `agent start` and `pane report-agent-session` now accept optional conceptual task provenance, and agent query JSON exposes it for parent-child orchestration.
 - Added an overview grid of every open session, opened with `prefix+a` or from the global menu. Cells show the workspace, tab, agent, and status; arrows, Tab, and Enter move focus, and Esc returns to the terminal.
 - Added a connections picker to the global menu for choosing the Local or SSH destination and adding one with `+ ssh`, plus `herdr connection` and client-local Local/SSH destination profiles. A bare `herdr` attaches to the active destination; `--remote` still overrides it, and passwords are never stored.
 - Added JCode detection, integration-managed native session reporting, and session restore.

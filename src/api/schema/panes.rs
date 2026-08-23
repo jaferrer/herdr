@@ -386,6 +386,8 @@ pub struct PaneReportAgentSessionParams {
     pub source: String,
     pub agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_provenance: Option<crate::terminal::TaskProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,

@@ -1274,7 +1274,7 @@ fn pane_report_agent(args: &[String]) -> std::io::Result<i32> {
 
 fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
     let Some(raw_pane_id) = args.first() else {
-        eprintln!("usage: herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--agent-session-name NAME] [--agent-session-icon ICON] [--session-start-source SOURCE]");
+        eprintln!("usage: herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--agent-session-name NAME] [--agent-session-icon ICON] [--session-start-source SOURCE] [--task-id ID --spawn-kind KIND --generation N [--parent-task-id ID]]");
         return Ok(2);
     };
 
@@ -1287,6 +1287,10 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
     let mut agent_session_name = None;
     let mut agent_session_icon = None;
     let mut session_start_source = None;
+    let mut task_id = None;
+    let mut parent_task_id = None;
+    let mut spawn_kind = None;
+    let mut generation = None;
 
     let mut index = 1;
     while index < args.len() {
@@ -1355,6 +1359,44 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
                 session_start_source = Some(value.clone());
                 index += 2;
             }
+            "--task-id" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --task-id");
+                    return Ok(2);
+                };
+                task_id = Some(value.clone());
+                index += 2;
+            }
+            "--parent-task-id" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --parent-task-id");
+                    return Ok(2);
+                };
+                parent_task_id = Some(value.clone());
+                index += 2;
+            }
+            "--spawn-kind" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --spawn-kind");
+                    return Ok(2);
+                };
+                spawn_kind = Some(value.clone());
+                index += 2;
+            }
+            "--generation" => {
+                let Some(value) = args.get(index + 1) else {
+                    eprintln!("missing value for --generation");
+                    return Ok(2);
+                };
+                generation = match super::parse_u64_flag("--generation", value) {
+                    Ok(generation) => Some(generation),
+                    Err(err) => {
+                        eprintln!("{err}");
+                        return Ok(2);
+                    }
+                };
+                index += 2;
+            }
             other => {
                 eprintln!("unknown option: {other}");
                 return Ok(2);
@@ -1373,12 +1415,25 @@ fn pane_report_agent_session(args: &[String]) -> std::io::Result<i32> {
         eprintln!("missing required --agent");
         return Ok(2);
     };
+    let task_provenance = match super::agent::task_provenance_from_options(
+        task_id,
+        parent_task_id,
+        spawn_kind,
+        generation,
+    ) {
+        Ok(task_provenance) => task_provenance,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
 
     super::send_ok_request(Method::PaneReportAgentSession(
         PaneReportAgentSessionParams {
             pane_id,
             source,
             agent,
+            task_provenance,
             seq,
             agent_session_id,
             agent_session_path,
@@ -1675,7 +1730,7 @@ fn print_pane_help() {
     eprintln!("  herdr pane send-keys <pane_id> <key> [key ...]");
     eprintln!("  herdr pane wait-output <pane_id> (--match TEXT | --regex PATTERN) [--source visible|recent|recent-unwrapped] [--lines N] [--timeout MS] [--raw]");
     eprintln!("  herdr pane report-agent <pane_id> --source ID --agent LABEL --state idle|working|blocked|unknown [--message TEXT] [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
-    eprintln!("  herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH]");
+    eprintln!("  herdr pane report-agent-session <pane_id> --source ID --agent LABEL [--seq N] [--agent-session-id ID] [--agent-session-path PATH] [--task-id ID --spawn-kind KIND --generation N [--parent-task-id ID]]");
     eprintln!("  herdr pane release-agent <pane_id> --source ID --agent LABEL [--seq N]");
     eprintln!("  herdr pane report-metadata <pane_id> --source ID [--agent LABEL] [--applies-to-source ID] [--title TEXT|--clear-title] [--display-agent TEXT|--clear-display-agent] [--state-label STATUS=TEXT] [--clear-state-labels] [--token NAME=VALUE] [--clear-token NAME] [--seq N] [--ttl-ms N]");
     eprintln!("  herdr pane run <pane_id> <command>");
