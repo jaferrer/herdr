@@ -615,8 +615,12 @@ impl TerminalState {
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,
             );
+            if let Some(session) = durable_session {
+                self.adopt_persisted_agent_session(session);
+            } else {
+                self.persisted_agent_session = None;
+            }
             self.hook_authority = None;
-            self.persisted_agent_session = durable_session;
         }
         if agent_released && !managed_process_exit {
             self.clear_agent_name();
@@ -1203,7 +1207,7 @@ impl TerminalState {
         for (source, agent_label, session_ref, pending) in validated_replacement_sessions {
             self.forget_stale_full_lifecycle_hook_session(&source, &agent_label, &session_ref);
             self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
-            self.persisted_agent_session = Some(crate::agent_resume::PersistedAgentSession {
+            self.adopt_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
                 source: source.clone(),
                 agent: agent_label,
                 session_ref,
@@ -1410,6 +1414,23 @@ impl TerminalState {
         &mut self,
         session: crate::agent_resume::PersistedAgentSession,
     ) {
+        self.adopt_persisted_agent_session(session);
+    }
+
+    fn adopt_persisted_agent_session(
+        &mut self,
+        session: crate::agent_resume::PersistedAgentSession,
+    ) {
+        if self.current_session_identity_for_persistence().is_some_and(
+            |(source, agent, kind, value)| {
+                source != session.source
+                    || agent != session.agent
+                    || kind != session.session_ref.kind
+                    || value != session.session_ref.value
+            },
+        ) {
+            self.clear_task_provenance();
+        }
         self.persisted_agent_session = Some(session);
     }
 
@@ -1646,7 +1667,7 @@ impl TerminalState {
             self.hook_authority = None;
         }
         self.reconcile_agent_name_owner(&agent_label, Some(&session_ref));
-        self.persisted_agent_session = Some(crate::agent_resume::PersistedAgentSession {
+        self.adopt_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
             source,
             agent: agent_label,
             session_ref,
@@ -5758,6 +5779,68 @@ mod tests {
             .expect("same session should be accepted");
 
         assert!(!mutation.session_ref_changed);
+    }
+
+    #[test]
+    fn new_agent_session_on_reused_terminal_clears_stale_task_provenance() {
+        let mut terminal = test_terminal();
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path("/tmp/pi-old.jsonl").unwrap(),
+        });
+        terminal.set_task_provenance(Some(TaskProvenance {
+            task_id: "task-old".into(),
+            parent_task_id: Some("task-parent".into()),
+            spawn_kind: "fork".into(),
+            generation: 2,
+        }));
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+
+        terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:pi".into(),
+                "pi".into(),
+                crate::agent_resume::AgentSessionRef::path("/tmp/pi-new.jsonl"),
+                Some(21),
+                Some("new".into()),
+            )
+            .expect("new foreground session should be accepted");
+
+        assert_eq!(terminal.task_provenance(), None);
+    }
+
+    #[test]
+    fn same_agent_session_report_preserves_task_provenance() {
+        let mut terminal = test_terminal();
+        let session_ref = crate::agent_resume::AgentSessionRef::path("/tmp/pi-session.jsonl")
+            .expect("valid session path");
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: session_ref.clone(),
+        });
+        let provenance = TaskProvenance {
+            task_id: "task-current".into(),
+            parent_task_id: Some("task-parent".into()),
+            spawn_kind: "fork".into(),
+            generation: 2,
+        };
+        terminal.set_task_provenance(Some(provenance.clone()));
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+
+        let mutation = terminal
+            .set_agent_session_ref_for_session_start(
+                "herdr:pi".into(),
+                "pi".into(),
+                Some(session_ref),
+                Some(21),
+                Some("resume".into()),
+            )
+            .expect("same foreground session should be accepted");
+
+        assert!(!mutation.session_ref_changed);
+        assert_eq!(terminal.task_provenance(), Some(&provenance));
     }
 
     #[test]
