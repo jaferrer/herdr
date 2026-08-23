@@ -488,8 +488,6 @@ impl AppState {
     ) -> Vec<NavigatorRow> {
         let ws = &self.workspaces[ws_idx];
         let mut nodes = Vec::new();
-        let mut roots_by_tab = vec![Vec::new(); ws.tabs.len()];
-        let mut task_indices = std::collections::HashMap::new();
 
         for (tab_idx, &show_tab_row) in show_tab_rows.iter().enumerate() {
             for row in self.navigator_pane_rows_for_tab(ws_idx, tab_idx, show_tab_row) {
@@ -500,43 +498,31 @@ impl AppState {
                     _ => None,
                 };
                 let provenance = terminal.and_then(|terminal| terminal.task_provenance());
-                let node_idx = nodes.len();
-                if let Some(task_id) = provenance.map(|provenance| provenance.task_id.clone()) {
-                    task_indices.entry(task_id).or_insert(node_idx);
-                }
                 nodes.push(NavigatorPaneNode {
                     row,
                     tab_idx,
+                    task_id: provenance.map(|provenance| provenance.task_id.clone()),
                     parent_task_id: provenance
                         .and_then(|provenance| provenance.parent_task_id.clone()),
                 });
             }
         }
 
-        let mut children = vec![Vec::new(); nodes.len()];
-        for (node_idx, node) in nodes.iter().enumerate() {
-            if let Some(parent_idx) = node
-                .parent_task_id
-                .as_ref()
-                .and_then(|parent_task_id| task_indices.get(parent_task_id))
-                .copied()
-                .filter(|parent_idx| *parent_idx != node_idx)
-            {
-                children[parent_idx].push(node_idx);
-            } else {
-                roots_by_tab[node.tab_idx].push(node_idx);
-            }
-        }
-
         let query_terms = query.split_whitespace().collect::<Vec<_>>();
-        let mut emitted = vec![false; nodes.len()];
         let mut rows = Vec::with_capacity(nodes.len().saturating_add(ws.tabs.len()));
-        let projection = NavigatorProjection {
-            nodes: &nodes,
-            children: &children,
-            query_kind,
-            query_terms: &query_terms,
-        };
+        let projection_nodes = nodes
+            .iter()
+            .map(|node| TaskProjectionNode {
+                task_id: node.task_id.as_deref(),
+                parent_task_id: node.parent_task_id.as_deref(),
+                group: node.tab_idx,
+            })
+            .collect::<Vec<_>>();
+        let base_depths = show_tab_rows
+            .iter()
+            .map(|show_tab_row| if *show_tab_row { 2 } else { 1 })
+            .collect::<Vec<_>>();
+        let projected_by_tab = project_task_ancestry(&projection_nodes, &base_depths);
         for (tab_idx, &show_tab_row) in show_tab_rows.iter().enumerate() {
             if show_tab_row {
                 let mut tab_row = self.navigator_tab_row(ws_idx, tab_idx);
@@ -552,21 +538,37 @@ impl AppState {
                 };
                 rows.push(tab_row);
             }
-            let depth = if show_tab_row { 2 } else { 1 };
-            for &node_idx in &roots_by_tab[tab_idx] {
-                projection.push_subtree(node_idx, depth, &mut emitted, &mut rows, &[]);
-            }
-        }
+            let mut lineage: Vec<(u8, Vec<bool>)> = Vec::new();
+            for projected in &projected_by_tab[tab_idx] {
+                while lineage
+                    .last()
+                    .is_some_and(|(depth, _)| *depth >= projected.depth)
+                {
+                    lineage.pop();
+                }
+                let mut lineage_matches = lineage
+                    .last()
+                    .map(|(_, matches)| matches.clone())
+                    .unwrap_or_default();
+                lineage_matches.resize(query_terms.len(), false);
 
-        // Cyclic or otherwise malformed provenance must not make panes vanish.
-        for node_idx in 0..nodes.len() {
-            if !emitted[node_idx] {
-                let depth = if show_tab_rows[nodes[node_idx].tab_idx] {
-                    2
-                } else {
-                    1
+                let mut row = nodes[projected.node_idx].row.clone();
+                row.depth = projected.depth;
+                for (matched, term) in lineage_matches.iter_mut().zip(&query_terms) {
+                    *matched |= row.search_text.contains(term);
+                }
+                row.matched = match query_kind {
+                    NavigatorQueryKind::Empty => true,
+                    NavigatorQueryKind::State(filter) => navigator_state_filter_matches(
+                        filter,
+                        row.status,
+                        row.seen,
+                        row.process_lifecycle,
+                    ),
+                    NavigatorQueryKind::Text => lineage_matches.iter().all(|matched| *matched),
                 };
-                projection.push_subtree(node_idx, depth, &mut emitted, &mut rows, &[]);
+                lineage.push((projected.depth, lineage_matches));
+                rows.push(row);
             }
         }
         rows
@@ -969,54 +971,95 @@ impl AppState {
 struct NavigatorPaneNode {
     row: NavigatorRow,
     tab_idx: usize,
+    task_id: Option<String>,
     parent_task_id: Option<String>,
 }
 
-struct NavigatorProjection<'a> {
-    nodes: &'a [NavigatorPaneNode],
-    children: &'a [Vec<usize>],
-    query_kind: NavigatorQueryKind,
-    query_terms: &'a [&'a str],
+pub(crate) struct TaskProjectionNode<'a> {
+    pub(crate) task_id: Option<&'a str>,
+    pub(crate) parent_task_id: Option<&'a str>,
+    pub(crate) group: usize,
 }
 
-impl NavigatorProjection<'_> {
+pub(crate) struct ProjectedTaskNode {
+    pub(crate) node_idx: usize,
+    pub(crate) depth: u8,
+}
+
+pub(crate) fn project_task_ancestry(
+    nodes: &[TaskProjectionNode<'_>],
+    base_depths: &[u8],
+) -> Vec<Vec<ProjectedTaskNode>> {
+    let mut task_indices = std::collections::HashMap::with_capacity(nodes.len());
+    for (node_idx, node) in nodes.iter().enumerate() {
+        if let Some(task_id) = node.task_id {
+            task_indices.entry(task_id).or_insert(node_idx);
+        }
+    }
+
+    let mut children = vec![Vec::new(); nodes.len()];
+    let mut roots_by_group = vec![Vec::new(); base_depths.len()];
+    for (node_idx, node) in nodes.iter().enumerate() {
+        let parent_idx = node
+            .parent_task_id
+            .and_then(|parent_task_id| task_indices.get(parent_task_id))
+            .copied()
+            .filter(|parent_idx| *parent_idx != node_idx);
+        if let Some(parent_idx) = parent_idx {
+            children[parent_idx].push(node_idx);
+        } else if let Some(roots) = roots_by_group.get_mut(node.group) {
+            roots.push(node_idx);
+        }
+    }
+
     fn push_subtree(
-        &self,
-        node_idx: usize,
-        depth: u8,
+        root_idx: usize,
+        base_depth: u8,
+        children: &[Vec<usize>],
         emitted: &mut [bool],
-        rows: &mut Vec<NavigatorRow>,
-        inherited_matches: &[bool],
+        output: &mut Vec<ProjectedTaskNode>,
     ) {
-        if std::mem::replace(&mut emitted[node_idx], true) {
-            return;
-        }
-        let node = &self.nodes[node_idx];
-        let mut row = node.row.clone();
-        row.depth = depth;
-        let mut lineage_matches = inherited_matches.to_vec();
-        lineage_matches.resize(self.query_terms.len(), false);
-        for (matched, term) in lineage_matches.iter_mut().zip(self.query_terms) {
-            *matched |= row.search_text.contains(term);
-        }
-        row.matched = match self.query_kind {
-            NavigatorQueryKind::Empty => true,
-            NavigatorQueryKind::State(filter) => {
-                navigator_state_filter_matches(filter, row.status, row.seen, row.process_lifecycle)
+        let mut stack = vec![(root_idx, base_depth)];
+        while let Some((node_idx, depth)) = stack.pop() {
+            if std::mem::replace(&mut emitted[node_idx], true) {
+                continue;
             }
-            NavigatorQueryKind::Text => lineage_matches.iter().all(|matched| *matched),
-        };
-        rows.push(row);
-        for &child_idx in &self.children[node_idx] {
-            self.push_subtree(
-                child_idx,
-                depth.saturating_add(1),
-                emitted,
-                rows,
-                &lineage_matches,
+            output.push(ProjectedTaskNode { node_idx, depth });
+            stack.extend(
+                children[node_idx]
+                    .iter()
+                    .rev()
+                    .map(|child_idx| (*child_idx, depth.saturating_add(1))),
             );
         }
     }
+
+    let mut emitted = vec![false; nodes.len()];
+    let mut projected_by_group = base_depths.iter().map(|_| Vec::new()).collect::<Vec<_>>();
+    for (group, roots) in roots_by_group.iter().enumerate() {
+        for &node_idx in roots {
+            push_subtree(
+                node_idx,
+                base_depths[group],
+                &children,
+                &mut emitted,
+                &mut projected_by_group[group],
+            );
+        }
+    }
+
+    // Cyclic or otherwise malformed provenance must not make panes vanish.
+    for node_idx in 0..nodes.len() {
+        if !emitted[node_idx] {
+            let group = nodes[node_idx].group;
+            if let (Some(&base_depth), Some(output)) =
+                (base_depths.get(group), projected_by_group.get_mut(group))
+            {
+                push_subtree(node_idx, base_depth, &children, &mut emitted, output);
+            }
+        }
+    }
+    projected_by_group
 }
 
 fn navigator_rows_with_matching_context(

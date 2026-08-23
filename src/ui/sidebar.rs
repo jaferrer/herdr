@@ -37,6 +37,9 @@ pub(crate) struct AgentPanelEntry {
     pub last_agent_state_change_seq: Option<u64>,
     pub state_labels: std::collections::HashMap<String, String>,
     pub tokens: std::collections::HashMap<String, String>,
+    pub(crate) task_id: Option<String>,
+    pub(crate) parent_task_id: Option<String>,
+    pub(crate) ancestry_depth: u8,
 }
 
 fn sidebar_section_heights(total_h: u16, split_ratio: f32) -> (u16, u16) {
@@ -130,7 +133,34 @@ fn agent_panel_entries_with_runtimes(
 ) -> Vec<AgentPanelEntry> {
     let mut entries = collect_agent_panel_entries_with_runtimes(app, terminal_runtimes);
     crate::app::agent_view::apply_agent_view(app, &mut entries);
+    project_agent_panel_entries(&mut entries);
     entries
+}
+
+fn project_agent_panel_entries(entries: &mut Vec<AgentPanelEntry>) {
+    let order = {
+        let nodes = entries
+            .iter()
+            .map(|entry| crate::app::actions::TaskProjectionNode {
+                task_id: entry.task_id.as_deref(),
+                parent_task_id: entry.parent_task_id.as_deref(),
+                group: 0,
+            })
+            .collect::<Vec<_>>();
+        crate::app::actions::project_task_ancestry(&nodes, &[0])
+            .pop()
+            .unwrap_or_default()
+    };
+    let mut source = std::mem::take(entries)
+        .into_iter()
+        .map(Some)
+        .collect::<Vec<_>>();
+    entries.extend(order.into_iter().filter_map(|projected| {
+        source[projected.node_idx].take().map(|mut entry| {
+            entry.ancestry_depth = projected.depth;
+            entry
+        })
+    }));
 }
 
 fn collect_agent_panel_entries_with_runtimes(
@@ -160,6 +190,12 @@ fn collect_agent_panel_entries_with_runtimes(
                             .tabs
                             .get(detail.tab_idx)
                             .is_some_and(|tab| !tab.is_auto_named());
+                    let provenance = ws
+                        .tabs
+                        .get(detail.tab_idx)
+                        .and_then(|tab| tab.terminal_id(detail.pane_id))
+                        .and_then(|terminal_id| app.terminals.get(terminal_id))
+                        .and_then(|terminal| terminal.task_provenance());
                     AgentPanelEntry {
                         ws_idx,
                         tab_idx: detail.tab_idx,
@@ -177,6 +213,9 @@ fn collect_agent_panel_entries_with_runtimes(
                         last_agent_state_change_seq: detail.last_agent_state_change_seq,
                         state_labels: detail.state_labels,
                         tokens: detail.tokens,
+                        task_id: provenance.map(|value| value.task_id.clone()),
+                        parent_task_id: provenance.and_then(|value| value.parent_task_id.clone()),
+                        ancestry_depth: 0,
                     }
                 })
         })
@@ -1520,7 +1559,9 @@ fn render_agent_detail(
         let state_icon = state_icon(detail.state, detail.seen, app.status_indicators, p);
 
         for (row_index, resolved) in rows.iter().take(height as usize).enumerate() {
-            let mut spans = vec![Span::raw(if row_index == 0 { " " } else { "   " })];
+            let prefix_width = (if row_index == 0 { 1 } else { 3 })
+                + usize::from(detail.ancestry_depth).saturating_mul(2);
+            let mut spans = vec![Span::raw(" ".repeat(prefix_width))];
             spans.extend(resolved_token_spans(
                 resolved,
                 state_icon,
@@ -1529,8 +1570,7 @@ fn render_agent_detail(
                 agent_style,
                 agent_style,
                 p,
-                body.width
-                    .saturating_sub(if row_index == 0 { 1 } else { 3 }) as usize,
+                usize::from(body.width).saturating_sub(prefix_width),
             ));
             frame.render_widget(
                 Paragraph::new(Line::from(spans)).style(row_style),
@@ -2019,6 +2059,149 @@ rows = [[{ token = "git_status", fg = "#123456" }]]
 
         assert!(first.contains("logs"), "rendered row: {first:?}");
         assert!(first.contains('·'), "rendered row: {first:?}");
+    }
+
+    #[test]
+    fn sibling_tab_child_renders_indented_under_conceptual_parent() {
+        let mut app = crate::app::state::AppState::test_new();
+        let mut workspace = Workspace::test_new("pi-extensions");
+        let parent = workspace.tabs[0].root_pane;
+        let sibling_tab = workspace.test_add_tab(Some("child canvas"));
+        let child = workspace.tabs[sibling_tab].root_pane;
+        app.workspaces = vec![workspace];
+        app.ensure_test_terminals();
+
+        for (pane_id, name, icon, task_id, parent_task_id) in [
+            (parent, "otter", "🦦", "task-parent", None),
+            (child, "bird", "🐦", "task-child", Some("task-parent")),
+        ] {
+            let terminal_id = app.workspaces[0].terminal_id(pane_id).cloned().unwrap();
+            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_agent_session_display(Some(name.into()), Some(icon.into()));
+            terminal.set_agent_name(format!("{icon} {name}"));
+            terminal.set_task_provenance(Some(crate::terminal::TaskProvenance {
+                task_id: task_id.into(),
+                parent_task_id: parent_task_id.map(str::to_string),
+                spawn_kind: "sibling_tab".into(),
+                generation: 1,
+            }));
+            terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
+        }
+        app.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+
+        let area = Rect::new(0, 0, 24, 8);
+        let body = agent_panel_body_rect(area, false);
+        let mut terminal = Terminal::new(TestBackend::new(area.width, area.height)).unwrap();
+        terminal
+            .draw(|frame| render_agent_detail(&app, &TerminalRuntimeRegistry::new(), frame, area))
+            .unwrap();
+
+        let parent_row = row_text(terminal.backend().buffer(), body.y, body.width);
+        let child_row = row_text(terminal.backend().buffer(), body.y + 1, body.width);
+        assert!(parent_row.contains("otter"), "rendered row: {parent_row:?}");
+        assert!(child_row.contains("bird"), "rendered row: {child_row:?}");
+        assert_eq!(parent_row.len() - parent_row.trim_start().len(), 1);
+        assert_eq!(child_row.len() - child_row.trim_start().len(), 3);
+    }
+
+    #[test]
+    fn conceptual_ancestry_preserves_agent_sort_roots_and_row_geometry() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = vec![
+            Workspace::test_new("parent"),
+            Workspace::test_new("unrelated"),
+            Workspace::test_new("child"),
+        ];
+        app.ensure_test_terminals();
+        let panes = app
+            .workspaces
+            .iter()
+            .map(|workspace| workspace.tabs[0].root_pane)
+            .collect::<Vec<_>>();
+
+        for (ws_idx, task_id, parent_task_id, state) in [
+            (0, "task-parent", Some("missing-parent"), AgentState::Idle),
+            (1, "task-unrelated", None, AgentState::Blocked),
+            (2, "task-child", Some("task-parent"), AgentState::Working),
+        ] {
+            let terminal_id = app.workspaces[ws_idx]
+                .terminal_id(panes[ws_idx])
+                .cloned()
+                .unwrap();
+            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_task_provenance(Some(crate::terminal::TaskProvenance {
+                task_id: task_id.into(),
+                parent_task_id: parent_task_id.map(str::to_string),
+                spawn_kind: "side".into(),
+                generation: 1,
+            }));
+            terminal.set_detected_state(Some(Agent::Pi), state);
+        }
+        app.sidebar_agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+
+        app.agent_panel_sort = crate::app::state::AgentPanelSort::Spaces;
+        assert_eq!(
+            agent_panel_entries(&app)
+                .iter()
+                .map(|entry| entry.pane_id)
+                .collect::<Vec<_>>(),
+            [panes[0], panes[2], panes[1]]
+        );
+
+        let panel = Rect::new(0, 0, 20, 6);
+        let grouped_metrics = agent_panel_scroll_metrics(&app, panel);
+        let body_height = agent_panel_body_rect(panel, false).height;
+        assert_eq!(grouped_metrics.viewport_rows, 3);
+        assert_eq!(grouped_metrics.max_offset_from_bottom, 0);
+        assert!(agent_panel_entries(&app)
+            .iter()
+            .all(|entry| agent_entry_height_in_body(&app, entry, body_height) == 1));
+
+        app.agent_panel_sort = crate::app::state::AgentPanelSort::Priority;
+        assert_eq!(
+            agent_panel_entries(&app)
+                .iter()
+                .map(|entry| entry.pane_id)
+                .collect::<Vec<_>>(),
+            [panes[1], panes[0], panes[2]]
+        );
+        assert_eq!(agent_panel_scroll_metrics(&app, panel), grouped_metrics);
+    }
+
+    #[test]
+    fn conceptual_ancestry_keeps_dangling_chain_at_contract_scale() {
+        let mut app = crate::app::state::AppState::test_new();
+        app.workspaces = (0..15)
+            .map(|idx| Workspace::test_new(&format!("task-{idx}")))
+            .collect();
+        app.ensure_test_terminals();
+
+        for idx in 0..15 {
+            let pane_id = app.workspaces[idx].tabs[0].root_pane;
+            let terminal_id = app.workspaces[idx].terminal_id(pane_id).cloned().unwrap();
+            let terminal = app.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_task_provenance(Some(crate::terminal::TaskProvenance {
+                task_id: format!("task-{idx}"),
+                parent_task_id: Some(if idx == 0 {
+                    "missing-parent".into()
+                } else {
+                    format!("task-{}", idx - 1)
+                }),
+                spawn_kind: "side".into(),
+                generation: 1,
+            }));
+            terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
+        }
+
+        let entries = agent_panel_entries(&app);
+        assert_eq!(entries.len(), 15);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.ancestry_depth)
+                .collect::<Vec<_>>(),
+            (0..15).collect::<Vec<_>>()
+        );
     }
 
     #[test]

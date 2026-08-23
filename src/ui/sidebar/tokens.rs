@@ -175,6 +175,9 @@ mod tests {
             last_agent_state_change_seq: None,
             state_labels: std::collections::HashMap::new(),
             tokens: std::collections::HashMap::new(),
+            task_id: None,
+            parent_task_id: None,
+            ancestry_depth: 0,
         }
     }
 
