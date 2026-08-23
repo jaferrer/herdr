@@ -3022,7 +3022,7 @@ impl AppState {
             let previous_agent_name = terminal.agent_name.clone();
             let managed_launch_pending = terminal.managed_agent_launch_pending();
             let mutation = update(terminal)?;
-            let managed_changed = terminal.reconcile_managed_agent_at(now, false);
+            let managed_changed = terminal.reconcile_managed_agent_at(now, None);
             let suppress_acquisition_completion = terminal.finish_agent_process_acquisition();
             let agent_name_changed = terminal.agent_name != previous_agent_name;
             let unchanged_change = (mutation.agent_released || agent_name_changed)
@@ -3089,7 +3089,7 @@ impl AppState {
     pub(crate) fn reconcile_managed_agents_at(&mut self, now: Instant) -> Vec<(usize, PaneId)> {
         let mut changed_terminals = std::collections::HashSet::new();
         for (terminal_id, terminal) in &mut self.terminals {
-            if terminal.reconcile_managed_agent_at(now, false) {
+            if terminal.reconcile_managed_agent_at(now, None) {
                 changed_terminals.insert(terminal_id.clone());
             }
         }
@@ -3503,14 +3503,16 @@ mod tests {
         let terminal_id = state.workspaces[0].terminal_id(pane_id).cloned().unwrap();
         let terminal = state.terminals.get_mut(&terminal_id).unwrap();
         terminal.restore_stopped_managed_agent("otter".into(), Agent::Pi, vec!["pi".into()], 1);
-        let current = terminal.begin_managed_agent_with_argv(
-            "otter".into(),
-            Agent::Pi,
-            vec!["pi".into(), "--session".into(), "opaque".into()],
-            Instant::now(),
-            std::time::Duration::ZERO,
-            std::time::Duration::from_secs(30),
-        );
+        let current = terminal
+            .begin_managed_agent_with_argv(
+                "otter".into(),
+                Agent::Pi,
+                vec!["pi".into(), "--session".into(), "opaque".into()],
+                Instant::now(),
+                std::time::Duration::ZERO,
+                std::time::Duration::from_secs(30),
+            )
+            .unwrap();
         assert_eq!(current, 2);
 
         state.handle_app_event(AppEvent::ManagedAgentLifecycleReported {

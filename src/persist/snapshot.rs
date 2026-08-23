@@ -611,7 +611,7 @@ mod tests {
             Some(crate::detect::Agent::Pi),
             crate::detect::AgentState::Idle,
         );
-        assert!(terminal.reconcile_managed_agent_at(now, false));
+        assert!(terminal.reconcile_managed_agent_at(now, None));
         let active = capture_from_state(&state);
         let active_pane = &active.workspaces[0].tabs[0].panes[&root.raw()];
         assert_eq!(active_pane.agent_name.as_deref(), Some("reviewer"));
@@ -627,7 +627,7 @@ mod tests {
             .clone();
         let terminal = state.terminals.get_mut(&terminal_id).unwrap();
         let now = std::time::Instant::now();
-        terminal.begin_managed_agent_with_argv(
+        let _ = terminal.begin_managed_agent_with_argv(
             "otter".into(),
             crate::detect::Agent::Pi,
             vec!["pi".into(), "--provider".into(), "omniroute".into()],
@@ -647,8 +647,8 @@ mod tests {
             Some(crate::detect::Agent::Pi),
             crate::detect::AgentState::Idle,
         );
-        assert!(terminal.reconcile_managed_agent_at(now, false));
-        assert!(terminal.reconcile_managed_agent_at(now, true));
+        assert!(terminal.reconcile_managed_agent_at(now, None));
+        assert!(terminal.reconcile_managed_agent_at(now, Some(1)));
 
         let json = serde_json::to_string(&capture_from_state(&state)).unwrap();
         let restored = parse_snapshot(&json).unwrap();

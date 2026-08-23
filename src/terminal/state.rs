@@ -1958,7 +1958,8 @@ impl TerminalState {
         settle_delay: Duration,
         timeout: Duration,
     ) {
-        self.begin_managed_agent_with_argv(name, kind, Vec::new(), now, settle_delay, timeout);
+        let _ =
+            self.begin_managed_agent_with_argv(name, kind, Vec::new(), now, settle_delay, timeout);
     }
 
     pub fn begin_managed_agent_with_argv(
@@ -1969,11 +1970,11 @@ impl TerminalState {
         now: Instant,
         settle_delay: Duration,
         timeout: Duration,
-    ) -> u64 {
-        let generation = self
-            .managed_agent_definition
-            .as_ref()
-            .map_or(1, |definition| definition.generation.saturating_add(1));
+    ) -> Option<u64> {
+        let generation = match self.managed_agent_definition.as_ref() {
+            Some(definition) => definition.generation.checked_add(1)?,
+            None => 1,
+        };
         self.set_agent_name(name);
         self.agent_name_owner = Some(AgentNameOwner {
             agent_label: crate::detect::agent_label(kind).to_string(),
@@ -1994,7 +1995,7 @@ impl TerminalState {
                 observed_expected: false,
             },
         });
-        generation
+        Some(generation)
     }
 
     pub fn managed_agent_launch_pending(&self) -> bool {
@@ -2072,16 +2073,27 @@ impl TerminalState {
         true
     }
 
-    pub fn mark_managed_agent_stopped(&mut self) -> bool {
+    pub fn mark_managed_agent_stopped(&mut self, generation: u64) -> bool {
         let Some(definition) = self.managed_agent_definition.as_mut() else {
             return false;
         };
-        if definition.lifecycle == ManagedAgentLifecycle::Stopped {
+        if definition.generation != generation
+            || definition.lifecycle == ManagedAgentLifecycle::Stopped
+        {
             return false;
         }
         definition.lifecycle = ManagedAgentLifecycle::Stopped;
         self.managed_agent = None;
         true
+    }
+
+    fn mark_managed_agent_start_failed(&mut self) {
+        if let Some(definition) = self.managed_agent_definition.as_mut() {
+            definition.lifecycle = ManagedAgentLifecycle::StartFailed;
+            self.managed_agent = None;
+        } else {
+            self.clear_agent_name();
+        }
     }
 
     pub fn next_managed_agent_deadline(&self) -> Option<Instant> {
@@ -2096,13 +2108,13 @@ impl TerminalState {
         Some(ready_after.unwrap_or(deadline).min(deadline))
     }
 
-    pub fn reconcile_managed_agent_at(&mut self, now: Instant, process_exited: bool) -> bool {
-        if process_exited && self.managed_agent_definition.is_some() {
-            if let Some(definition) = self.managed_agent_definition.as_mut() {
-                definition.lifecycle = ManagedAgentLifecycle::Stopped;
-            }
-            self.managed_agent = None;
-            return true;
+    pub fn reconcile_managed_agent_at(
+        &mut self,
+        now: Instant,
+        process_exit_generation: Option<u64>,
+    ) -> bool {
+        if let Some(generation) = process_exit_generation {
+            return self.mark_managed_agent_stopped(generation);
         }
         let Some(managed) = self.managed_agent else {
             return false;
@@ -2114,13 +2126,12 @@ impl TerminalState {
             } => observed_expected || known_agent == Some(managed.kind),
             ManagedAgentPhase::Blocked | ManagedAgentPhase::Active => false,
         };
-        let clear = process_exited
-            || known_agent.is_some_and(|agent| agent != managed.kind)
+        let clear = known_agent.is_some_and(|agent| agent != managed.kind)
             || matches!(managed.phase, ManagedAgentPhase::Pending { .. })
                 && observed_expected
                 && known_agent.is_none();
         if clear {
-            self.clear_agent_name();
+            self.mark_managed_agent_start_failed();
             return true;
         }
         if managed.phase == ManagedAgentPhase::Blocked {
@@ -2150,7 +2161,7 @@ impl TerminalState {
                 return true;
             }
             if now >= deadline {
-                self.clear_agent_name();
+                self.mark_managed_agent_start_failed();
                 return true;
             }
             if ready_after.is_none_or(|ready_after| now >= ready_after) {
@@ -2240,12 +2251,15 @@ impl TerminalState {
     }
 
     pub fn clear_agent_runtime_identity_after_respawn(&mut self) {
+        let preserve_managed_definition = self.managed_agent_definition.is_some();
         self.detected_agent = None;
         self.fallback_state = AgentState::Unknown;
         self.fallback_visible_blocker = false;
         self.fallback_observed_at = None;
         self.hook_authority = None;
-        self.persisted_agent_session = None;
+        if !preserve_managed_definition {
+            self.persisted_agent_session = None;
+        }
         self.agent_session_display_name = None;
         self.agent_session_display_icon = None;
         self.agent_metadata.clear();
@@ -2259,7 +2273,13 @@ impl TerminalState {
         self.recent_agent_process_exit = None;
         self.agent_process_acquisition_pending = false;
         self.pending_agent_resume_plan = None;
-        self.clear_agent_name();
+        if preserve_managed_definition {
+            if let Some(generation) = self.managed_agent_generation() {
+                self.mark_managed_agent_stopped(generation);
+            }
+        } else {
+            self.clear_agent_name();
+        }
     }
 
     pub fn is_agent_terminal(&self) -> bool {
@@ -2272,6 +2292,9 @@ impl TerminalState {
         session_ref: Option<&crate::agent_resume::AgentSessionRef>,
     ) {
         if self.agent_name.is_none() {
+            return;
+        }
+        if self.managed_agent_definition.is_some() {
             return;
         }
         if self.managed_agent.is_some_and(|managed| {
@@ -2412,31 +2435,31 @@ mod tests {
 
         assert!(terminal.managed_agent_launch_pending());
         assert!(!terminal.managed_agent_interactive_ready());
-        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(100), false));
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(100), None));
         assert!(terminal.managed_agent_launch_pending());
 
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
-        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_millis(101), false));
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_millis(101), None));
 
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Blocked);
-        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(102), false));
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_millis(102), None));
         assert!(terminal.managed_agent_launch_pending());
         assert!(!terminal.managed_agent_interactive_ready());
         assert_eq!(terminal.next_managed_agent_deadline(), None);
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), false));
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), None));
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
 
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), false));
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), None));
         assert!(!terminal.managed_agent_launch_pending());
         assert!(terminal.managed_agent_interactive_ready());
 
         terminal.set_detected_state(None, AgentState::Unknown);
         assert!(terminal.managed_agent_interactive_ready());
-        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), false));
+        assert!(!terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), None));
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
-        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), true));
+        assert!(terminal.reconcile_managed_agent_at(now + Duration::from_secs(2), Some(1)));
         assert_eq!(terminal.agent_name.as_deref(), Some("reviewer"));
         assert_eq!(
             terminal.managed_agent_lifecycle(),
@@ -2445,32 +2468,68 @@ mod tests {
     }
 
     #[test]
-    fn managed_agent_mismatch_and_timeout_release_name() {
+    fn managed_agent_mismatch_and_timeout_keep_durable_definition() {
         let now = Instant::now();
         let mut mismatch = test_terminal();
-        mismatch.begin_managed_agent(
+        let _ = mismatch.begin_managed_agent_with_argv(
             "reviewer".into(),
             Agent::Pi,
+            vec!["pi".into(), "--provider".into(), "omniroute".into()],
             now,
             Duration::ZERO,
             Duration::from_secs(1),
         );
+        mismatch.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("pi-session").unwrap(),
+        });
         mismatch.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-        assert!(mismatch.reconcile_managed_agent_at(now, false));
-        assert_eq!(mismatch.agent_name, None);
-        assert_eq!(mismatch.managed_agent_kind(), None);
+        assert!(mismatch.reconcile_managed_agent_at(now, None));
+        assert_eq!(mismatch.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(mismatch.managed_agent_kind(), Some(Agent::Pi));
+        assert_eq!(
+            mismatch.managed_agent_argv(),
+            Some(
+                ["pi", "--provider", "omniroute"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
+        assert_eq!(mismatch.managed_agent_generation(), Some(1));
+        assert_eq!(
+            mismatch.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::StartFailed)
+        );
+        assert!(mismatch.persisted_agent_session.is_some());
 
         let mut timed_out = test_terminal();
-        timed_out.begin_managed_agent(
+        let _ = timed_out.begin_managed_agent_with_argv(
             "reviewer".into(),
             Agent::Pi,
+            vec!["pi".into()],
             now,
             Duration::from_millis(10),
             Duration::from_millis(20),
         );
-        assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), false));
-        assert_eq!(timed_out.agent_name, None);
-        assert_eq!(timed_out.managed_agent_kind(), None);
+        timed_out.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("pi-session").unwrap(),
+        });
+        assert!(timed_out.reconcile_managed_agent_at(now + Duration::from_millis(20), None));
+        assert_eq!(timed_out.agent_name.as_deref(), Some("reviewer"));
+        assert_eq!(timed_out.managed_agent_kind(), Some(Agent::Pi));
+        assert_eq!(
+            timed_out.managed_agent_argv(),
+            Some(["pi".into()].as_slice())
+        );
+        assert_eq!(timed_out.managed_agent_generation(), Some(1));
+        assert_eq!(
+            timed_out.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::StartFailed)
+        );
+        assert!(timed_out.persisted_agent_session.is_some());
     }
 
     #[test]
@@ -2485,9 +2544,9 @@ mod tests {
             Duration::from_secs(30),
         );
         terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-        assert!(terminal.reconcile_managed_agent_at(now, false));
+        assert!(terminal.reconcile_managed_agent_at(now, None));
 
-        assert!(terminal.reconcile_managed_agent_at(now, true));
+        assert!(terminal.reconcile_managed_agent_at(now, Some(1)));
 
         assert_eq!(terminal.agent_name.as_deref(), Some("otter"));
         assert_eq!(terminal.managed_agent_kind(), Some(Agent::Pi));
@@ -2520,23 +2579,27 @@ mod tests {
     fn stale_managed_agent_generation_cannot_overwrite_current_lifecycle() {
         let now = Instant::now();
         let mut terminal = test_terminal();
-        let first = terminal.begin_managed_agent_with_argv(
-            "otter".into(),
-            Agent::Pi,
-            vec!["pi".into()],
-            now,
-            Duration::ZERO,
-            Duration::from_secs(30),
-        );
-        terminal.mark_managed_agent_stopped();
-        let second = terminal.begin_managed_agent_with_argv(
-            "otter".into(),
-            Agent::Pi,
-            vec!["pi".into(), "--session".into(), "opaque".into()],
-            now,
-            Duration::ZERO,
-            Duration::from_secs(30),
-        );
+        let first = terminal
+            .begin_managed_agent_with_argv(
+                "otter".into(),
+                Agent::Pi,
+                vec!["pi".into()],
+                now,
+                Duration::ZERO,
+                Duration::from_secs(30),
+            )
+            .unwrap();
+        terminal.mark_managed_agent_stopped(first);
+        let second = terminal
+            .begin_managed_agent_with_argv(
+                "otter".into(),
+                Agent::Pi,
+                vec!["pi".into(), "--session".into(), "opaque".into()],
+                now,
+                Duration::ZERO,
+                Duration::from_secs(30),
+            )
+            .unwrap();
 
         assert_eq!((first, second), (1, 2));
         assert!(!terminal.report_managed_agent_lifecycle(first, ManagedAgentLifecycle::Stopped));
@@ -2549,6 +2612,81 @@ mod tests {
             terminal.managed_agent_lifecycle(),
             Some(ManagedAgentLifecycle::Running)
         );
+    }
+
+    #[test]
+    fn stale_process_exit_generation_cannot_stop_current_managed_agent() {
+        let now = Instant::now();
+        let mut terminal = test_terminal();
+        let first = terminal
+            .begin_managed_agent_with_argv(
+                "otter".into(),
+                Agent::Pi,
+                vec!["pi".into()],
+                now,
+                Duration::ZERO,
+                Duration::from_secs(30),
+            )
+            .unwrap();
+        terminal.mark_managed_agent_stopped(first);
+        let current = terminal
+            .begin_managed_agent_with_argv(
+                "otter".into(),
+                Agent::Pi,
+                vec!["pi".into(), "--session".into(), "opaque".into()],
+                now,
+                Duration::ZERO,
+                Duration::from_secs(30),
+            )
+            .unwrap();
+
+        assert!(!terminal.reconcile_managed_agent_at(now, Some(first)));
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Starting)
+        );
+        assert!(terminal.reconcile_managed_agent_at(now, Some(current)));
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Stopped)
+        );
+    }
+
+    #[test]
+    fn exhausted_managed_agent_generation_cannot_be_reused() {
+        let mut terminal = test_terminal();
+        terminal.restore_stopped_managed_agent(
+            "otter".into(),
+            Agent::Pi,
+            vec!["pi".into()],
+            u64::MAX,
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("pi-session").unwrap(),
+        });
+
+        let generation = terminal.begin_managed_agent_with_argv(
+            "otter".into(),
+            Agent::Pi,
+            vec!["pi".into(), "--session".into(), "pi-session".into()],
+            Instant::now(),
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+
+        assert_eq!(generation, None);
+        assert_eq!(terminal.managed_agent_generation(), Some(u64::MAX));
+        assert_eq!(
+            terminal.managed_agent_argv(),
+            Some(["pi".into()].as_slice())
+        );
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Stopped)
+        );
+        assert!(terminal.persisted_agent_session.is_some());
     }
 
     #[test]
@@ -5208,7 +5346,7 @@ mod tests {
             Duration::from_secs(1),
         );
         terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Idle);
-        assert!(terminal.reconcile_managed_agent_at(now, false));
+        assert!(terminal.reconcile_managed_agent_at(now, None));
 
         for session in ["opencode-old", "opencode-new"] {
             terminal
@@ -5954,6 +6092,43 @@ mod tests {
         assert!(terminal.persisted_agent_session.is_none());
         assert!(!terminal.respawn_shell_on_exit);
         assert!(!terminal.finish_agent_process_acquisition());
+    }
+
+    #[test]
+    fn respawn_cleanup_keeps_managed_definition_and_session() {
+        let mut terminal = test_terminal();
+        let _ = terminal.begin_managed_agent_with_argv(
+            "otter".into(),
+            Agent::Pi,
+            vec!["pi".into(), "--provider".into(), "omniroute".into()],
+            Instant::now(),
+            Duration::ZERO,
+            Duration::from_secs(30),
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("pi-session").unwrap(),
+        });
+
+        terminal.clear_agent_runtime_identity_after_respawn();
+
+        assert_eq!(terminal.agent_name.as_deref(), Some("otter"));
+        assert_eq!(terminal.managed_agent_kind(), Some(Agent::Pi));
+        assert_eq!(
+            terminal.managed_agent_argv(),
+            Some(
+                ["pi", "--provider", "omniroute"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
+        assert_eq!(terminal.managed_agent_generation(), Some(1));
+        assert_eq!(
+            terminal.managed_agent_lifecycle(),
+            Some(ManagedAgentLifecycle::Stopped)
+        );
+        assert!(terminal.persisted_agent_session.is_some());
     }
 
     #[test]

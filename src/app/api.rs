@@ -111,13 +111,11 @@ impl App {
         pane_id: crate::layout::PaneId,
         generation: Option<u64>,
     ) -> bool {
-        let Some(generation) = generation else {
-            return false;
-        };
-        self.find_pane(pane_id)
+        let current_generation = self
+            .find_pane(pane_id)
             .and_then(|(_, pane)| self.state.terminals.get(&pane.attached_terminal_id))
-            .and_then(crate::terminal::TerminalState::managed_agent_generation)
-            != Some(generation)
+            .and_then(crate::terminal::TerminalState::managed_agent_generation);
+        current_generation.is_some_and(|current| generation != Some(current))
     }
 
     pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
@@ -231,7 +229,11 @@ impl App {
             return Vec::new();
         }
 
-        if let AppEvent::PaneDied { pane_id, .. } = &ev {
+        if let AppEvent::PaneDied {
+            pane_id,
+            generation,
+        } = &ev
+        {
             if self
                 .state
                 .popup_pane
@@ -245,8 +247,10 @@ impl App {
             if exit_action == RuntimeExitAction::PreserveStopped {
                 if let Some((_, pane)) = self.find_pane(*pane_id) {
                     let terminal_id = pane.attached_terminal_id.clone();
-                    if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
-                        terminal.mark_managed_agent_stopped();
+                    if let (Some(terminal), Some(generation)) =
+                        (self.state.terminals.get_mut(&terminal_id), *generation)
+                    {
+                        terminal.mark_managed_agent_stopped(generation);
                     }
                 }
             }
@@ -569,10 +573,12 @@ impl App {
             return RuntimeExitAction::ClosePane;
         };
 
-        if terminal.respawn_shell_on_exit || self.should_respawn_shell_after_agent_exit(terminal) {
-            RuntimeExitAction::RespawnShell
-        } else if terminal.managed_agent_generation().is_some() {
+        if terminal.managed_agent_generation().is_some() {
             RuntimeExitAction::PreserveStopped
+        } else if terminal.respawn_shell_on_exit
+            || self.should_respawn_shell_after_agent_exit(terminal)
+        {
+            RuntimeExitAction::RespawnShell
         } else {
             RuntimeExitAction::ClosePane
         }
@@ -2259,7 +2265,7 @@ mod tests {
         app.state.ensure_test_terminals();
         let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
         let now = Instant::now();
-        terminal.begin_managed_agent_with_argv(
+        let _ = terminal.begin_managed_agent_with_argv(
             "otter".into(),
             crate::detect::Agent::Pi,
             vec!["pi".into()],
@@ -2280,7 +2286,8 @@ mod tests {
             .unwrap(),
         });
         terminal.set_detected_state(Some(crate::detect::Agent::Pi), AgentState::Idle);
-        assert!(terminal.reconcile_managed_agent_at(now, false));
+        assert!(terminal.reconcile_managed_agent_at(now, None));
+        terminal.respawn_shell_on_exit = true;
 
         app.handle_internal_event(AppEvent::PaneDied {
             pane_id,
@@ -2323,7 +2330,7 @@ mod tests {
                 Duration::ZERO,
                 Duration::from_secs(30),
             ),
-            2
+            Some(2)
         );
 
         app.handle_internal_event(AppEvent::PaneDied {
@@ -2332,6 +2339,16 @@ mod tests {
         });
 
         assert!(app.find_pane(pane_id).is_some());
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_lifecycle(),
+            Some(crate::terminal::ManagedAgentLifecycle::Starting)
+        );
+
+        app.handle_internal_event(AppEvent::PaneDied {
+            pane_id,
+            generation: None,
+        });
+
         assert_eq!(
             app.state.terminals[&terminal_id].managed_agent_lifecycle(),
             Some(crate::terminal::ManagedAgentLifecycle::Starting)

@@ -53,7 +53,7 @@ impl App {
             .state
             .terminals
             .get_mut(&terminal_id)
-            .is_some_and(|terminal| terminal.reconcile_managed_agent_at(Instant::now(), false));
+            .is_some_and(|terminal| terminal.reconcile_managed_agent_at(Instant::now(), None));
         if changed {
             self.state.mark_session_dirty();
             self.schedule_session_save();
@@ -215,15 +215,17 @@ impl App {
             .terminals
             .get_mut(&terminal_id)
             .ok_or_else(|| AgentStartError::TargetUnavailable(params.pane_id.clone()))?;
-        let _generation = terminal.begin_managed_agent_with_argv(
+        let Some(generation) = terminal.begin_managed_agent_with_argv(
             name.clone(),
             kind,
             argv.clone(),
             now,
             AGENT_START_SETTLE_DELAY,
             timeout,
-        );
-        runtime.set_managed_agent_generation(_generation);
+        ) else {
+            return Err(AgentStartError::TargetUnavailable(params.pane_id));
+        };
+        runtime.set_managed_agent_generation(generation);
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             terminal.clear_agent_name();
             return Err(AgentStartError::InputFailed(err.to_string()));
@@ -332,7 +334,7 @@ impl App {
             .map(|info| (info.inner_rect.height, info.inner_rect.width))
             .unwrap_or_else(|| self.state.estimate_pane_size());
         let cwd = self.state.terminals[&terminal_id].cwd.clone();
-        let generation = self
+        let Some(generation) = self
             .state
             .terminals
             .get_mut(&terminal_id)
@@ -344,7 +346,10 @@ impl App {
                 Instant::now(),
                 AGENT_START_SETTLE_DELAY,
                 timeout,
-            );
+            )
+        else {
+            return Err(AgentStartError::ResumeFailed);
+        };
         if !self.start_pending_agent_resume(
             pane_id,
             terminal_id.clone(),
