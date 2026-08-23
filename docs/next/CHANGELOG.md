@@ -9,6 +9,7 @@
 - Added JCode detection, integration-managed native session reporting, and session restore.
 
 ### Changed
+- The session navigator now projects conceptual agent ancestry across tabs, shows memorable session names and stopped/failed lifecycle indicators, resumes stopped rows by keyboard or mouse, and searches lineage, lifecycle, and opaque session references.
 - Auto-named desktop tabs now show the focused agent's reported session name and icon when available.
 
 ### Fixed

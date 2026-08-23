@@ -251,6 +251,11 @@ pub(crate) fn handle_navigator_key(
             state.navigator.state_filter = Some(NavigatorStateFilter::Done);
             state.select_first_navigator_match_from(terminal_runtimes);
         }
+        KeyCode::Char('s') if key.modifiers.is_empty() => {
+            state.navigator.query.clear();
+            state.navigator.state_filter = Some(NavigatorStateFilter::Stopped);
+            state.select_first_navigator_match_from(terminal_runtimes);
+        }
         KeyCode::Char('j') | KeyCode::Down if key.modifiers.is_empty() => {
             state.move_navigator_selection_from(terminal_runtimes, 1)
         }
@@ -291,7 +296,7 @@ impl App {
         handle_navigator_key(&mut self.state, &self.terminal_runtimes, key);
     }
 
-    fn resume_selected_navigator_managed_agent(&mut self) -> bool {
+    pub(super) fn resume_selected_navigator_managed_agent(&mut self) -> bool {
         let Some(row) = self
             .state
             .navigator_rows_from(&self.terminal_runtimes)

@@ -912,6 +912,7 @@ pub(crate) struct NavigatorRow {
     pub label: String,
     pub meta: String,
     pub status: AgentState,
+    pub process_lifecycle: Option<crate::terminal::ManagedAgentLifecycle>,
     pub seen: bool,
     pub is_current: bool,
     pub is_workspace: bool,
@@ -968,6 +969,7 @@ pub(crate) enum NavigatorStateFilter {
     Working,
     Idle,
     Done,
+    Stopped,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -2360,6 +2362,7 @@ mod tests {
             label: String::new(),
             meta: String::new(),
             status: crate::detect::AgentState::Idle,
+            process_lifecycle: None,
             seen: true,
             is_current: false,
             is_workspace,

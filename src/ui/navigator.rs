@@ -90,6 +90,17 @@ fn render_search(app: &AppState, frame: &mut Frame, area: Rect) {
             "done",
             app,
         ),
+        Some(NavigatorStateFilter::Stopped) => {
+            spans.push(Span::styled(
+                "■",
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                "stopped",
+                Style::default().fg(p.overlay0).add_modifier(Modifier::BOLD),
+            ));
+        }
         None if query.is_empty() => spans.push(Span::styled(
             "search panes",
             Style::default().fg(p.overlay0),
@@ -201,7 +212,19 @@ fn render_row(
     } else {
         Style::default().fg(p.subtext0).bg(p.panel_bg)
     };
-    let (status_icon, status_style) = state_icon(row.status, row.seen, app.status_indicators, p);
+    let (status_icon, status_style) = match row.process_lifecycle {
+        Some(crate::terminal::ManagedAgentLifecycle::Stopped) => {
+            ("■", Style::default().fg(p.overlay0))
+        }
+        Some(crate::terminal::ManagedAgentLifecycle::StartFailed) => {
+            ("⚠", Style::default().fg(p.peach))
+        }
+        Some(
+            crate::terminal::ManagedAgentLifecycle::Starting
+            | crate::terminal::ManagedAgentLifecycle::Running,
+        )
+        | None => state_icon(row.status, row.seen, app.status_indicators, p),
+    };
     let status_style = if selected {
         base_style.add_modifier(Modifier::BOLD)
     } else if context_only {
@@ -556,7 +579,7 @@ fn render_footer(app: &AppState, frame: &mut Frame, area: Rect) {
             Span::styled(" switch  ", dim),
             Span::styled("/", key),
             Span::styled(" search  ", dim),
-            Span::styled("b/w/i/d/a", key),
+            Span::styled("b/w/i/d/s/a", key),
             Span::styled(" states  ", dim),
             Span::styled("j/k/↑↓", key),
             Span::styled(" move  ", dim),
@@ -579,6 +602,7 @@ mod tests {
             label: String::new(),
             meta: String::new(),
             status: AgentState::Idle,
+            process_lifecycle: None,
             seen: true,
             is_current: false,
             is_workspace,

@@ -397,7 +397,7 @@ impl AppState {
                 NavigatorQueryKind::Empty => true,
                 NavigatorQueryKind::State(filter) => {
                     let (state, seen) = ws.aggregate_state(&self.terminals);
-                    navigator_state_filter_matches(filter, state, seen)
+                    navigator_state_filter_matches(filter, state, seen, None)
                 }
                 NavigatorQueryKind::Text => navigator_matches(&query, &workspace_search_text),
             };
@@ -418,6 +418,7 @@ impl AppState {
                 label: format!("{workspace_label} ({pane_count})"),
                 meta: activity,
                 status: state,
+                process_lifecycle: None,
                 seen,
                 is_current: self.active == Some(ws_idx),
                 is_workspace: true,
@@ -444,14 +445,17 @@ impl AppState {
             return Vec::new();
         };
         let multi_tab = ws.tabs.len() > 1;
-        let mut rows = Vec::new();
+        let mut show_tab_rows = Vec::with_capacity(ws.tabs.len());
         for tab_idx in 0..ws.tabs.len() {
             let mut tab_row = self.navigator_tab_row(ws_idx, tab_idx);
             let tab_matches = match query_kind {
                 NavigatorQueryKind::Empty => true,
-                NavigatorQueryKind::State(filter) => {
-                    navigator_state_filter_matches(filter, tab_row.status, tab_row.seen)
-                }
+                NavigatorQueryKind::State(filter) => navigator_state_filter_matches(
+                    filter,
+                    tab_row.status,
+                    tab_row.seen,
+                    tab_row.process_lifecycle,
+                ),
                 NavigatorQueryKind::Text => navigator_matches(
                     query,
                     if multi_tab {
@@ -462,33 +466,108 @@ impl AppState {
                 ),
             };
             tab_row.matched = tab_matches;
-            let show_tab_row =
-                multi_tab || (matches!(query_kind, NavigatorQueryKind::Text) && tab_matches);
-            let mut pane_rows = self.navigator_pane_rows_for_tab(ws_idx, tab_idx, show_tab_row);
-            let filtered_panes = match query_kind {
-                NavigatorQueryKind::Empty => pane_rows,
-                NavigatorQueryKind::State(filter) => pane_rows
-                    .into_iter()
-                    .filter(|row| navigator_state_filter_matches(filter, row.status, row.seen))
-                    .collect::<Vec<_>>(),
-                // A matching workspace or tab shows its whole subtree; panes
-                // keep their own match flag so context rows can be dimmed.
-                NavigatorQueryKind::Text if workspace_matches || tab_matches => {
-                    for row in pane_rows.iter_mut() {
-                        row.matched = navigator_matches(query, &row.search_text);
-                    }
-                    pane_rows
-                }
-                NavigatorQueryKind::Text => pane_rows
-                    .into_iter()
-                    .filter(|row| navigator_matches(query, &row.search_text))
-                    .collect::<Vec<_>>(),
-            };
+            show_tab_rows
+                .push(multi_tab || (matches!(query_kind, NavigatorQueryKind::Text) && tab_matches));
+        }
 
-            if show_tab_row && (tab_matches || !filtered_panes.is_empty()) {
+        let rows = self.navigator_projected_child_rows(ws_idx, &show_tab_rows, query_kind, query);
+        if matches!(query_kind, NavigatorQueryKind::Empty)
+            || (matches!(query_kind, NavigatorQueryKind::Text) && workspace_matches)
+        {
+            return rows;
+        }
+        navigator_rows_with_matching_context(rows, matches!(query_kind, NavigatorQueryKind::Text))
+    }
+
+    fn navigator_projected_child_rows(
+        &self,
+        ws_idx: usize,
+        show_tab_rows: &[bool],
+        query_kind: NavigatorQueryKind,
+        query: &str,
+    ) -> Vec<NavigatorRow> {
+        let ws = &self.workspaces[ws_idx];
+        let mut nodes = Vec::new();
+        let mut roots_by_tab = vec![Vec::new(); ws.tabs.len()];
+        let mut task_indices = std::collections::HashMap::new();
+
+        for (tab_idx, &show_tab_row) in show_tab_rows.iter().enumerate() {
+            for row in self.navigator_pane_rows_for_tab(ws_idx, tab_idx, show_tab_row) {
+                let terminal = match row.target {
+                    NavigatorTarget::Pane { pane_id, .. } => ws.tabs[tab_idx]
+                        .terminal_id(pane_id)
+                        .and_then(|terminal_id| self.terminals.get(terminal_id)),
+                    _ => None,
+                };
+                let provenance = terminal.and_then(|terminal| terminal.task_provenance());
+                let node_idx = nodes.len();
+                if let Some(task_id) = provenance.map(|provenance| provenance.task_id.clone()) {
+                    task_indices.entry(task_id).or_insert(node_idx);
+                }
+                nodes.push(NavigatorPaneNode {
+                    row,
+                    tab_idx,
+                    parent_task_id: provenance
+                        .and_then(|provenance| provenance.parent_task_id.clone()),
+                });
+            }
+        }
+
+        let mut children = vec![Vec::new(); nodes.len()];
+        for (node_idx, node) in nodes.iter().enumerate() {
+            if let Some(parent_idx) = node
+                .parent_task_id
+                .as_ref()
+                .and_then(|parent_task_id| task_indices.get(parent_task_id))
+                .copied()
+                .filter(|parent_idx| *parent_idx != node_idx)
+            {
+                children[parent_idx].push(node_idx);
+            } else {
+                roots_by_tab[node.tab_idx].push(node_idx);
+            }
+        }
+
+        let query_terms = query.split_whitespace().collect::<Vec<_>>();
+        let mut emitted = vec![false; nodes.len()];
+        let mut rows = Vec::with_capacity(nodes.len().saturating_add(ws.tabs.len()));
+        let projection = NavigatorProjection {
+            nodes: &nodes,
+            children: &children,
+            query_kind,
+            query_terms: &query_terms,
+        };
+        for (tab_idx, &show_tab_row) in show_tab_rows.iter().enumerate() {
+            if show_tab_row {
+                let mut tab_row = self.navigator_tab_row(ws_idx, tab_idx);
+                tab_row.matched = match query_kind {
+                    NavigatorQueryKind::Empty => true,
+                    NavigatorQueryKind::State(filter) => navigator_state_filter_matches(
+                        filter,
+                        tab_row.status,
+                        tab_row.seen,
+                        tab_row.process_lifecycle,
+                    ),
+                    NavigatorQueryKind::Text => navigator_matches(query, &tab_row.search_text),
+                };
                 rows.push(tab_row);
             }
-            rows.extend(filtered_panes);
+            let depth = if show_tab_row { 2 } else { 1 };
+            for &node_idx in &roots_by_tab[tab_idx] {
+                projection.push_subtree(node_idx, depth, &mut emitted, &mut rows, &[]);
+            }
+        }
+
+        // Cyclic or otherwise malformed provenance must not make panes vanish.
+        for node_idx in 0..nodes.len() {
+            if !emitted[node_idx] {
+                let depth = if show_tab_rows[nodes[node_idx].tab_idx] {
+                    2
+                } else {
+                    1
+                };
+                projection.push_subtree(node_idx, depth, &mut emitted, &mut rows, &[]);
+            }
         }
         rows
     }
@@ -514,6 +593,7 @@ impl AppState {
             label,
             meta,
             status,
+            process_lifecycle: None,
             seen,
             is_current: false,
             is_workspace: false,
@@ -544,7 +624,15 @@ impl AppState {
             let terminal = self.terminals.get(&pane.attached_terminal_id);
             let pane_number = ws.public_pane_number(pane_id).unwrap_or(0);
             let label = terminal
-                .and_then(|terminal| terminal.effective_title())
+                .and_then(|terminal| {
+                    terminal.agent_session_display_name.as_deref().map(|name| {
+                        match terminal.agent_session_display_icon.as_deref() {
+                            Some(icon) if !icon.is_empty() => format!("{icon} {name}"),
+                            _ => name.to_string(),
+                        }
+                    })
+                })
+                .or_else(|| terminal.and_then(|terminal| terminal.effective_title()))
                 .or_else(|| {
                     terminal
                         .and_then(|terminal| terminal.manual_label.as_deref().map(str::to_string))
@@ -572,15 +660,14 @@ impl AppState {
             let status_label = terminal
                 .map(|terminal| terminal.effective_presentation().state_labels)
                 .and_then(|labels| labels.get(state_label_text(state, pane.seen)).cloned());
-            let process_status =
-                terminal.and_then(|terminal| match terminal.managed_agent_lifecycle() {
-                    Some(crate::terminal::ManagedAgentLifecycle::Starting) => Some("starting"),
-                    Some(crate::terminal::ManagedAgentLifecycle::Stopped) => Some("stopped"),
-                    Some(crate::terminal::ManagedAgentLifecycle::StartFailed) => {
-                        Some("unavailable")
-                    }
-                    Some(crate::terminal::ManagedAgentLifecycle::Running) | None => None,
-                });
+            let process_lifecycle =
+                terminal.and_then(|terminal| terminal.managed_agent_lifecycle());
+            let process_status = match process_lifecycle {
+                Some(crate::terminal::ManagedAgentLifecycle::Starting) => Some("starting"),
+                Some(crate::terminal::ManagedAgentLifecycle::Stopped) => Some("stopped"),
+                Some(crate::terminal::ManagedAgentLifecycle::StartFailed) => Some("failed"),
+                Some(crate::terminal::ManagedAgentLifecycle::Running) | None => None,
+            };
             let status = process_status
                 .map(str::to_string)
                 .or(status_label)
@@ -591,7 +678,30 @@ impl AppState {
                 (None, _) => "shell".to_string(),
             };
             let is_current = self.is_active_pane(ws_idx, tab_idx, pane_id);
-            let search_text = format!("{label} {meta}").to_lowercase();
+            let tab_label = ws
+                .tab_display_name(tab_idx)
+                .unwrap_or_else(|| (tab_idx + 1).to_string());
+            let session_ref = terminal
+                .and_then(|terminal| terminal.hook_authority.as_ref())
+                .and_then(|authority| authority.session_ref.as_ref())
+                .or_else(|| {
+                    terminal
+                        .and_then(|terminal| terminal.persisted_agent_session.as_ref())
+                        .map(|session| &session.session_ref)
+                })
+                .map(|session_ref| session_ref.value.as_str())
+                .unwrap_or_default();
+            let provenance = terminal.and_then(|terminal| terminal.task_provenance());
+            let search_text = format!(
+                "{label} {meta} {tab_label} {session_ref} {} {}",
+                provenance
+                    .map(|value| value.task_id.as_str())
+                    .unwrap_or_default(),
+                provenance
+                    .and_then(|value| value.parent_task_id.as_deref())
+                    .unwrap_or_default()
+            )
+            .to_lowercase();
             rows.push(NavigatorRow {
                 target: NavigatorTarget::Pane {
                     ws_idx,
@@ -602,6 +712,7 @@ impl AppState {
                 label,
                 meta,
                 status: state,
+                process_lifecycle,
                 seen: pane.seen,
                 is_current,
                 is_workspace: false,
@@ -855,6 +966,103 @@ impl AppState {
     }
 }
 
+struct NavigatorPaneNode {
+    row: NavigatorRow,
+    tab_idx: usize,
+    parent_task_id: Option<String>,
+}
+
+struct NavigatorProjection<'a> {
+    nodes: &'a [NavigatorPaneNode],
+    children: &'a [Vec<usize>],
+    query_kind: NavigatorQueryKind,
+    query_terms: &'a [&'a str],
+}
+
+impl NavigatorProjection<'_> {
+    fn push_subtree(
+        &self,
+        node_idx: usize,
+        depth: u8,
+        emitted: &mut [bool],
+        rows: &mut Vec<NavigatorRow>,
+        inherited_matches: &[bool],
+    ) {
+        if std::mem::replace(&mut emitted[node_idx], true) {
+            return;
+        }
+        let node = &self.nodes[node_idx];
+        let mut row = node.row.clone();
+        row.depth = depth;
+        let mut lineage_matches = inherited_matches.to_vec();
+        lineage_matches.resize(self.query_terms.len(), false);
+        for (matched, term) in lineage_matches.iter_mut().zip(self.query_terms) {
+            *matched |= row.search_text.contains(term);
+        }
+        row.matched = match self.query_kind {
+            NavigatorQueryKind::Empty => true,
+            NavigatorQueryKind::State(filter) => {
+                navigator_state_filter_matches(filter, row.status, row.seen, row.process_lifecycle)
+            }
+            NavigatorQueryKind::Text => lineage_matches.iter().all(|matched| *matched),
+        };
+        rows.push(row);
+        for &child_idx in &self.children[node_idx] {
+            self.push_subtree(
+                child_idx,
+                depth.saturating_add(1),
+                emitted,
+                rows,
+                &lineage_matches,
+            );
+        }
+    }
+}
+
+fn navigator_rows_with_matching_context(
+    rows: Vec<NavigatorRow>,
+    cascade_matching_tabs: bool,
+) -> Vec<NavigatorRow> {
+    let mut parents = Vec::with_capacity(rows.len());
+    let mut stack: Vec<usize> = Vec::new();
+    for row in &rows {
+        while stack
+            .last()
+            .is_some_and(|&parent_idx| rows[parent_idx].depth >= row.depth)
+        {
+            stack.pop();
+        }
+        parents.push(stack.last().copied());
+        stack.push(parents.len() - 1);
+    }
+
+    let mut include = rows.iter().map(|row| row.matched).collect::<Vec<_>>();
+    if cascade_matching_tabs {
+        let mut matching_tab_depth = None;
+        for (idx, row) in rows.iter().enumerate() {
+            if matching_tab_depth.is_some_and(|depth| row.depth <= depth) {
+                matching_tab_depth = None;
+            }
+            if row.is_tab && row.matched {
+                matching_tab_depth = Some(row.depth);
+            } else if matching_tab_depth.is_some() {
+                include[idx] = true;
+            }
+        }
+    }
+    for idx in (0..rows.len()).rev() {
+        if include[idx] {
+            if let Some(parent_idx) = parents[idx] {
+                include[parent_idx] = true;
+            }
+        }
+    }
+    rows.into_iter()
+        .zip(include)
+        .filter_map(|(row, include)| include.then_some(row))
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NavigatorQueryKind {
     Empty,
@@ -880,12 +1088,17 @@ fn navigator_state_filter_matches(
     filter: NavigatorStateFilter,
     state: AgentState,
     seen: bool,
+    process_lifecycle: Option<crate::terminal::ManagedAgentLifecycle>,
 ) -> bool {
     match filter {
         NavigatorStateFilter::Blocked => state == AgentState::Blocked,
         NavigatorStateFilter::Working => state == AgentState::Working,
         NavigatorStateFilter::Idle => state == AgentState::Idle && seen,
         NavigatorStateFilter::Done => state == AgentState::Idle && !seen,
+        NavigatorStateFilter::Stopped => matches!(
+            process_lifecycle,
+            Some(crate::terminal::ManagedAgentLifecycle::Stopped)
+        ),
     }
 }
 
@@ -3773,6 +3986,171 @@ mod tests {
                 tab_idx: 1
             }
         )));
+    }
+
+    #[test]
+    fn navigator_projects_sibling_tab_child_under_conceptual_parent() {
+        let mut state = app_with_workspaces(&["pi-extensions"]);
+        let parent = state.workspaces[0].tabs[0].root_pane;
+        let sibling_tab = state.workspaces[0].test_add_tab(Some("child canvas"));
+        let child = state.workspaces[0].tabs[sibling_tab].root_pane;
+        state.ensure_test_terminals();
+
+        for (pane_id, name, icon, task_id, parent_task_id, agent_state) in [
+            (parent, "otter", "🦦", "task-parent", None, AgentState::Idle),
+            (
+                child,
+                "bird",
+                "🐦",
+                "task-child",
+                Some("task-parent"),
+                AgentState::Working,
+            ),
+        ] {
+            let terminal_id = state.workspaces[0].terminal_id(pane_id).cloned().unwrap();
+            let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_agent_session_display(Some(name.into()), Some(icon.into()));
+            terminal.set_task_provenance(Some(crate::terminal::TaskProvenance {
+                task_id: task_id.into(),
+                parent_task_id: parent_task_id.map(str::to_string),
+                spawn_kind: "sibling_tab".into(),
+                generation: 1,
+            }));
+            terminal.set_detected_state(Some(Agent::Pi), agent_state);
+        }
+
+        state.open_navigator();
+        let rows = state.navigator_rows();
+        let parent_idx = rows
+            .iter()
+            .position(|row| matches!(row.target, crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == parent))
+            .unwrap();
+        let child_idx = rows
+            .iter()
+            .position(|row| matches!(row.target, crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == child))
+            .unwrap();
+
+        assert_eq!(rows[parent_idx].label, "🦦 otter");
+        assert_eq!(rows[child_idx].label, "🐦 bird");
+        assert_eq!(rows[parent_idx].depth, 2);
+        assert_eq!(rows[child_idx].depth, 3);
+        assert_eq!(child_idx, parent_idx + 1);
+    }
+
+    #[test]
+    fn navigator_search_and_stopped_filter_cover_conceptual_fields() {
+        let mut state = app_with_workspaces(&["pi-extensions"]);
+        let parent = state.workspaces[0].tabs[0].root_pane;
+        let child = state.workspaces[0].test_split(Direction::Horizontal);
+        state.ensure_test_terminals();
+
+        let parent_terminal_id = state.workspaces[0].terminal_id(parent).cloned().unwrap();
+        let parent_terminal = state.terminals.get_mut(&parent_terminal_id).unwrap();
+        parent_terminal.set_agent_session_display(Some("otter".into()), Some("🦦".into()));
+        parent_terminal.set_task_provenance(Some(crate::terminal::TaskProvenance {
+            task_id: "task-parent".into(),
+            parent_task_id: None,
+            spawn_kind: "root".into(),
+            generation: 1,
+        }));
+        parent_terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+
+        let child_terminal_id = state.workspaces[0].terminal_id(child).cloned().unwrap();
+        let child_terminal = state.terminals.get_mut(&child_terminal_id).unwrap();
+        child_terminal.set_agent_session_display(Some("bird".into()), Some("🐦".into()));
+        child_terminal.set_task_provenance(Some(crate::terminal::TaskProvenance {
+            task_id: "task-child".into(),
+            parent_task_id: Some("task-parent".into()),
+            spawn_kind: "side".into(),
+            generation: 1,
+        }));
+        child_terminal.restore_stopped_managed_agent(
+            "bird".into(),
+            Agent::Pi,
+            vec!["pi".into()],
+            1,
+        );
+        child_terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::id("opaque-session-406").unwrap(),
+        });
+
+        state.open_navigator();
+        state.navigator.query = "pi-extensions".into();
+        assert!(state.navigator_rows().iter().any(|row| {
+            matches!(row.target, crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == child)
+        }));
+
+        for query in [
+            "bird",
+            "otter stopped",
+            "task-parent stopped",
+            "opaque-session-406",
+        ] {
+            state.navigator.query = query.into();
+            let rows = state.navigator_rows();
+            assert!(rows.iter().any(|row| {
+                row.matched
+                    && matches!(row.target, crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == child)
+            }), "query did not match stopped child: {query}");
+        }
+
+        state.navigator.query.clear();
+        state.navigator.state_filter = Some(NavigatorStateFilter::Stopped);
+        let rows = state.navigator_rows();
+        assert!(rows.iter().any(|row| {
+            row.matched
+                && matches!(row.target, crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == child)
+        }));
+        assert!(!rows.iter().any(|row| {
+            row.matched
+                && matches!(row.target, crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == parent)
+        }));
+    }
+
+    #[test]
+    fn navigator_projects_dangling_chain_at_contract_scale() {
+        let mut state = app_with_workspaces(&["scale"]);
+        let mut panes = vec![state.workspaces[0].tabs[0].root_pane];
+        for _ in 1..16 {
+            panes.push(state.workspaces[0].test_split(Direction::Horizontal));
+        }
+        state.ensure_test_terminals();
+
+        for (idx, pane_id) in panes.iter().copied().enumerate() {
+            let terminal_id = state.workspaces[0].terminal_id(pane_id).cloned().unwrap();
+            let terminal = state.terminals.get_mut(&terminal_id).unwrap();
+            terminal.set_agent_session_display(Some(format!("task {idx}")), None);
+            terminal.set_task_provenance(Some(crate::terminal::TaskProvenance {
+                task_id: format!("task-{idx}"),
+                parent_task_id: if idx == 0 {
+                    Some("missing-parent".into())
+                } else {
+                    Some(format!("task-{}", idx - 1))
+                },
+                spawn_kind: "side".into(),
+                generation: 1,
+            }));
+            terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
+        }
+
+        state.open_navigator();
+        let rows = state.navigator_rows();
+        let pane_rows = rows
+            .iter()
+            .filter(|row| matches!(row.target, crate::app::state::NavigatorTarget::Pane { .. }))
+            .collect::<Vec<_>>();
+        assert_eq!(pane_rows.len(), 16);
+        assert_eq!(pane_rows.first().unwrap().depth, 1);
+        assert_eq!(pane_rows.last().unwrap().depth, 16);
+
+        state.navigator.query = "task-0 task-15".into();
+        let rows = state.navigator_rows();
+        assert!(rows.iter().any(|row| {
+            row.matched
+                && matches!(row.target, crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == panes[15])
+        }));
     }
 
     #[test]

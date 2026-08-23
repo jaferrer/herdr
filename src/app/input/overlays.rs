@@ -162,7 +162,7 @@ impl App {
                                 self.state
                                     .accept_navigator_selection_from(&self.terminal_runtimes);
                             }
-                        } else {
+                        } else if !self.resume_selected_navigator_managed_agent() {
                             self.state
                                 .accept_navigator_selection_from(&self.terminal_runtimes);
                         }

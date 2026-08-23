@@ -4973,6 +4973,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn navigator_mouse_resumes_stopped_managed_pane() {
+        let mut app = test_app();
+        let mut workspace = Workspace::test_new("navigator-mouse-resume");
+        let root = workspace.tabs[0].root_pane;
+        let stopped = workspace.test_split(ratatui::layout::Direction::Horizontal);
+        workspace.tabs[0].layout.focus_pane(root);
+        let terminal_id = workspace.terminal_id(stopped).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        app.state.mode = Mode::Navigator;
+        app.state.view.sidebar_rect = ratatui::layout::Rect::new(0, 0, 24, 24);
+        app.state.view.terminal_area = ratatui::layout::Rect::new(24, 0, 96, 24);
+        let session_path = std::env::temp_dir().join(format!(
+            "herdr-pi-navigator-mouse-resume-{}-{}.jsonl",
+            std::process::id(),
+            stopped.raw()
+        ));
+        std::fs::write(&session_path, "{}\n").unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_stopped_managed_agent(
+            "otter".into(),
+            crate::detect::Agent::Pi,
+            vec!["pi".into()],
+            4,
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(
+                session_path.display().to_string(),
+            )
+            .unwrap(),
+        });
+        let (runtime, _input) = TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        app.state
+            .navigator
+            .expanded_workspaces
+            .insert(app.state.workspaces[0].id.clone());
+        let rows = app.state.navigator_rows_from(&app.terminal_runtimes);
+        let selected = rows
+            .iter()
+            .position(|row| {
+                matches!(
+                    row.target,
+                    crate::app::state::NavigatorTarget::Pane { pane_id, .. } if pane_id == stopped
+                )
+            })
+            .unwrap();
+        let lines = crate::app::state::navigator_display_lines(&rows);
+        let line = crate::app::state::navigator_display_index_of_row(&lines, selected).unwrap();
+        let body = app.state.navigator_body_rect();
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(root));
+
+        app.handle_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: body.x + 6,
+            row: body.y + line as u16,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        });
+
+        assert_eq!(app.state.mode, Mode::Terminal);
+        assert_eq!(app.state.workspaces[0].focused_pane_id(), Some(stopped));
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_generation(),
+            Some(5)
+        );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        std::fs::remove_file(session_path).unwrap();
+    }
+
+    #[tokio::test]
     async fn explicit_resume_rejects_missing_and_invalid_session_without_launching() {
         let mut app = test_app();
         let workspace = Workspace::test_new("invalid-resume");
