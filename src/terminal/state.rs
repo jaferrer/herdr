@@ -86,6 +86,17 @@ pub enum ManagedAgentLifecycle {
     StartFailed,
 }
 
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct TaskProvenance {
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task_id: Option<String>,
+    pub spawn_kind: String,
+    pub generation: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ManagedAgentDefinition {
     name: String,
@@ -159,6 +170,7 @@ pub struct TerminalState {
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
     managed_agent_definition: Option<ManagedAgentDefinition>,
+    task_provenance: Option<TaskProvenance>,
     hook_report_sequences: HashMap<String, u64>,
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
     stale_full_lifecycle_hook_sessions: HashMap<String, Vec<StaleFullLifecycleHookSession>>,
@@ -196,6 +208,7 @@ impl TerminalState {
             agent_name_owner: None,
             managed_agent: None,
             managed_agent_definition: None,
+            task_provenance: None,
             hook_report_sequences: HashMap::new(),
             suppressed_full_lifecycle_hook_reports: HashMap::new(),
             stale_full_lifecycle_hook_sessions: HashMap::new(),
@@ -2041,6 +2054,18 @@ impl TerminalState {
         self.managed_agent_definition
             .as_ref()
             .map(|definition| definition.argv.as_slice())
+    }
+
+    pub fn task_provenance(&self) -> Option<&TaskProvenance> {
+        self.task_provenance.as_ref()
+    }
+
+    pub fn set_task_provenance(&mut self, provenance: Option<TaskProvenance>) {
+        self.task_provenance = provenance;
+    }
+
+    pub fn clear_task_provenance(&mut self) {
+        self.task_provenance = None;
     }
 
     pub fn report_managed_agent_lifecycle(

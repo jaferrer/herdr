@@ -150,6 +150,7 @@ impl App {
             return self.resume_agent(params);
         }
         let name = params.name;
+        let task_provenance = params.task_provenance;
         if !valid_agent_name(&name) {
             return Err(AgentStartError::InvalidName);
         }
@@ -225,9 +226,11 @@ impl App {
         ) else {
             return Err(AgentStartError::TargetUnavailable(params.pane_id));
         };
+        terminal.set_task_provenance(task_provenance);
         runtime.set_managed_agent_generation(generation);
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             terminal.clear_agent_name();
+            terminal.clear_task_provenance();
             return Err(AgentStartError::InputFailed(err.to_string()));
         }
         self.state.mark_session_dirty();
@@ -236,6 +239,7 @@ impl App {
         let agent = self
             .agent_info(ws_idx, pane_id)
             .ok_or(AgentStartError::TargetUnavailable(params.pane_id))?;
+        self.emit_pane_updated(ws_idx, pane_id);
         Ok((agent, argv))
     }
 
@@ -577,6 +581,7 @@ impl App {
             state_labels: pane.state_labels,
             tokens: pane.tokens,
             agent_session: pane.agent_session,
+            task_provenance: pane.task_provenance,
             workspace_id: pane.workspace_id,
             tab_id: pane.tab_id,
             pane_id: pane.pane_id,

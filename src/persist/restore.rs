@@ -525,6 +525,7 @@ fn restore_tab(
         });
         let saved_launch_argv = saved_pane.and_then(|p| p.launch_argv.clone());
         let saved_agent_session = saved_pane.and_then(|p| p.agent_session.as_ref());
+        let saved_task_provenance = saved_pane.and_then(|pane| pane.task_provenance.clone());
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
         let startup = {
@@ -561,6 +562,7 @@ fn restore_tab(
             {
                 let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
+                terminal.set_task_provenance(saved_task_provenance.clone());
                 if let Some(label) = saved_label {
                     terminal.set_manual_label(label);
                 }
@@ -582,6 +584,7 @@ fn restore_tab(
             let terminal_id = TerminalId::alloc();
             let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone())
                 .with_pending_agent_resume_plan(plan);
+            terminal.set_task_provenance(saved_task_provenance.clone());
             if let Some(label) = saved_label {
                 terminal.set_manual_label(label);
             }
@@ -674,6 +677,7 @@ fn restore_tab(
             Ok(runtime) => {
                 let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
+                terminal.set_task_provenance(saved_task_provenance);
                 if was_imported {
                     if let Some(argv) = saved_launch_argv {
                         terminal = terminal.with_launch_argv(argv).with_respawn_shell_on_exit();
@@ -1253,6 +1257,7 @@ mod tests {
                                 kind: crate::agent_resume::AgentSessionRefKind::Path,
                                 value: test_session_path("pi-session.jsonl"),
                             }),
+                            task_provenance: None,
                             launch_argv: None,
                         },
                     )]),
@@ -1349,6 +1354,7 @@ mod tests {
                             managed_agent_kind: Some("pi".into()),
                             managed_agent: Some(managed),
                             agent_session: None,
+                            task_provenance: None,
                             launch_argv: None,
                         },
                     )]),
@@ -1392,6 +1398,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn task_provenance_restores_with_a_dangling_parent() {
+        let cwd = std::env::current_dir().unwrap();
+        let provenance = crate::terminal::TaskProvenance {
+            task_id: "task-child".into(),
+            parent_task_id: Some("missing-parent".into()),
+            spawn_kind: "fork".into(),
+            generation: 9,
+        };
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd,
+                            label: None,
+                            agent_name: None,
+                            managed_agent_kind: None,
+                            managed_agent: None,
+                            agent_session: None,
+                            task_provenance: Some(provenance.clone()),
+                            launch_argv: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (_workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        assert_eq!(
+            terminals
+                .values()
+                .next()
+                .and_then(crate::terminal::TerminalState::task_provenance),
+            Some(&provenance)
+        );
+    }
+
+    #[tokio::test]
     async fn restore_preserves_public_id_mapping_after_pane_id_remap() {
         let cwd = std::env::current_dir().unwrap();
         let snapshot = SessionSnapshot {
@@ -1423,6 +1502,7 @@ mod tests {
                                 managed_agent_kind: None,
                                 managed_agent: None,
                                 agent_session: None,
+                                task_provenance: None,
                                 launch_argv: None,
                             },
                         ),
@@ -1435,6 +1515,7 @@ mod tests {
                                 managed_agent_kind: None,
                                 managed_agent: None,
                                 agent_session: None,
+                                task_provenance: None,
                                 launch_argv: None,
                             },
                         ),
@@ -1489,6 +1570,7 @@ mod tests {
                     managed_agent_kind: None,
                     managed_agent: None,
                     agent_session: None,
+                    task_provenance: None,
                     launch_argv: None,
                 },
             )
@@ -1505,6 +1587,7 @@ mod tests {
                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                 value: "codex-session".into(),
             }),
+            task_provenance: None,
             launch_argv: None,
         };
         let snapshot = SessionSnapshot {
@@ -1657,6 +1740,7 @@ mod tests {
                                 kind: crate::agent_resume::AgentSessionRefKind::Id,
                                 value: "codex-session".into(),
                             }),
+                            task_provenance: None,
                             launch_argv: None,
                         },
                     )]),
@@ -1901,6 +1985,7 @@ mod tests {
                 managed_agent_kind: None,
                 managed_agent: None,
                 agent_session: None,
+                task_provenance: None,
                 launch_argv: None,
             },
         );

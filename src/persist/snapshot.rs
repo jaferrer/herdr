@@ -108,6 +108,8 @@ pub struct PaneSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<PaneAgentSessionSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_provenance: Option<crate::terminal::TaskProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
 }
 
@@ -390,6 +392,7 @@ fn capture_tab(
                 managed_agent_kind,
                 managed_agent,
                 agent_session,
+                task_provenance: terminal.and_then(|terminal| terminal.task_provenance().cloned()),
                 launch_argv,
             },
         );
@@ -671,6 +674,62 @@ mod tests {
     }
 
     #[test]
+    fn task_provenance_is_captured_without_layout_identity() {
+        let mut state = state_with_workspaces(&["provenance"]);
+        let root = state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = state.workspaces[0].tabs[0].panes[&root]
+            .attached_terminal_id
+            .clone();
+        state
+            .terminals
+            .get_mut(&terminal_id)
+            .unwrap()
+            .set_task_provenance(Some(crate::terminal::TaskProvenance {
+                task_id: "task-child".into(),
+                parent_task_id: Some("missing-parent".into()),
+                spawn_kind: "fork".into(),
+                generation: 9,
+            }));
+
+        let json = serde_json::to_value(capture_from_state(&state)).unwrap();
+
+        assert_eq!(
+            json["workspaces"][0]["tabs"][0]["panes"][root.raw().to_string()]["task_provenance"],
+            serde_json::json!({
+                "task_id": "task-child",
+                "parent_task_id": "missing-parent",
+                "spawn_kind": "fork",
+                "generation": 9
+            })
+        );
+        assert!(
+            json["workspaces"][0]["tabs"][0]["panes"][root.raw().to_string()]["task_provenance"]
+                .get("pane_id")
+                .is_none()
+        );
+        assert!(
+            json["workspaces"][0]["tabs"][0]["panes"][root.raw().to_string()]["task_provenance"]
+                .get("workspace_id")
+                .is_none()
+        );
+        assert!(
+            json["workspaces"][0]["tabs"][0]["panes"][root.raw().to_string()]["task_provenance"]
+                .get("tab_id")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn pane_snapshot_without_task_provenance_remains_compatible() {
+        let pane: PaneSnapshot = serde_json::from_value(serde_json::json!({
+            "cwd": "/tmp"
+        }))
+        .unwrap();
+
+        assert_eq!(pane.task_provenance, None);
+    }
+
+    #[test]
     fn round_trip_empty_session() {
         let snap = SessionSnapshot {
             version: SNAPSHOT_VERSION,
@@ -723,6 +782,7 @@ mod tests {
                 managed_agent_kind: None,
                 managed_agent: None,
                 agent_session: None,
+                task_provenance: None,
                 launch_argv: None,
             },
         );
@@ -735,6 +795,7 @@ mod tests {
                 managed_agent_kind: None,
                 managed_agent: None,
                 agent_session: None,
+                task_provenance: None,
                 launch_argv: None,
             },
         );
@@ -1284,6 +1345,7 @@ mod tests {
                 managed_agent_kind: None,
                 managed_agent: None,
                 agent_session: None,
+                task_provenance: None,
                 launch_argv: None,
             },
         );
@@ -1298,6 +1360,7 @@ mod tests {
                 managed_agent_kind: None,
                 managed_agent: None,
                 agent_session: None,
+                task_provenance: None,
                 launch_argv: None,
             },
         );

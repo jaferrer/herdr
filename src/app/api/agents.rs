@@ -333,6 +333,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_start_exposes_task_provenance_in_responses_and_events() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let public_pane_id = app.public_pane_id(0, pane_id).unwrap();
+        let (runtime, _input) = crate::terminal::TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        let provenance = serde_json::json!({
+            "task_id": "task-child",
+            "parent_task_id": "task-parent",
+            "spawn_kind": "fork",
+            "generation": 7
+        });
+
+        let response = app.handle_api_request(
+            serde_json::from_value(serde_json::json!({
+                "id": "start-with-provenance",
+                "method": "agent.start",
+                "params": {
+                    "name": "worker",
+                    "kind": "pi",
+                    "pane_id": public_pane_id,
+                    "timeout_ms": 4_000,
+                    "task_provenance": provenance
+                }
+            }))
+            .unwrap(),
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["result"]["agent"]["task_provenance"], provenance);
+        assert_eq!(
+            serde_json::to_value(app.pane_info(0, pane_id).unwrap()).unwrap()["task_provenance"],
+            provenance
+        );
+        assert!(app.event_hub.events_after(0).iter().any(|(_, event)| {
+            serde_json::to_value(event)
+                .is_ok_and(|event| event["data"]["pane"]["task_provenance"] == provenance)
+        }));
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+    }
+
+    #[tokio::test]
     async fn agent_prompt_sends_text_then_delays_enter() {
         let mut app = app_with_agent();
         let pane_id = app.state.workspaces[0].tabs[0].root_pane;
@@ -627,5 +675,39 @@ mod tests {
                 Some("shell-pane")
             );
         }
+    }
+
+    #[test]
+    fn clearing_agent_display_name_preserves_task_provenance() {
+        let mut app = app_with_agent();
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let provenance = crate::terminal::TaskProvenance {
+            task_id: "task-stable".into(),
+            parent_task_id: None,
+            spawn_kind: "root".into(),
+            generation: 1,
+        };
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.set_agent_name("display-name".into());
+        terminal.set_task_provenance(Some(provenance.clone()));
+        terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+
+        let response = app.handle_agent_rename(
+            "clear-display-name".into(),
+            AgentRenameParams {
+                target: app.public_pane_id(0, pane_id).unwrap(),
+                name: None,
+            },
+        );
+        let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::AgentInfo { agent } = response.result else {
+            panic!("expected agent info response");
+        };
+
+        assert_eq!(agent.name, None);
+        assert_eq!(agent.task_provenance, Some(provenance));
     }
 }

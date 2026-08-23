@@ -2951,6 +2951,87 @@ mod tests {
     }
 
     #[test]
+    fn task_provenance_survives_move_and_parent_close_without_cascade() {
+        let (mut app, parent_public_id) = app_with_test_workspace();
+        let parent = app.state.workspaces[0].tabs[0].root_pane;
+        let child = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        seed_terminal_states(&mut app);
+        let parent_terminal = app.state.workspaces[0].terminal_id(parent).unwrap().clone();
+        let child_terminal = app.state.workspaces[0].terminal_id(child).unwrap().clone();
+        let child_public_id = app.public_pane_id(0, child).unwrap();
+        let parent_provenance = crate::terminal::TaskProvenance {
+            task_id: "task-parent".into(),
+            parent_task_id: None,
+            spawn_kind: "root".into(),
+            generation: 1,
+        };
+        let child_provenance = crate::terminal::TaskProvenance {
+            task_id: "task-child".into(),
+            parent_task_id: Some(parent_provenance.task_id.clone()),
+            spawn_kind: "fork".into(),
+            generation: 2,
+        };
+        app.state
+            .terminals
+            .get_mut(&parent_terminal)
+            .unwrap()
+            .set_task_provenance(Some(parent_provenance));
+        app.state
+            .terminals
+            .get_mut(&child_terminal)
+            .unwrap()
+            .set_task_provenance(Some(child_provenance.clone()));
+
+        let response = app.handle_pane_move(
+            "move-child".into(),
+            PaneMoveParams {
+                pane_id: child_public_id,
+                destination: PaneMoveDestination::NewTab {
+                    workspace_id: None,
+                    label: Some("moved".into()),
+                },
+                focus: true,
+            },
+        );
+        let response: SuccessResponse = serde_json::from_str(&response).unwrap();
+        let ResponseResult::PaneMove { move_result } = response.result else {
+            panic!("expected pane move response");
+        };
+
+        assert_eq!(
+            move_result.pane.task_provenance.as_ref(),
+            Some(&child_provenance)
+        );
+        assert!(app.event_hub.events_after(0).iter().any(|(_, event)| {
+            matches!(
+                &event.data,
+                EventData::PaneMoved { pane, .. }
+                    if pane.task_provenance.as_ref() == Some(&child_provenance)
+            )
+        }));
+
+        let close = app.handle_pane_close(
+            "close-parent".into(),
+            PaneTarget {
+                pane_id: parent_public_id,
+            },
+        );
+        let close: SuccessResponse = serde_json::from_str(&close).unwrap();
+        assert!(matches!(close.result, ResponseResult::Ok {}));
+        assert!(!app.state.terminals.contains_key(&parent_terminal));
+        assert_eq!(
+            app.state.terminals[&child_terminal].task_provenance(),
+            Some(&child_provenance)
+        );
+        assert_eq!(
+            app.state.terminals[&child_terminal]
+                .task_provenance()
+                .and_then(|provenance| provenance.parent_task_id.as_deref()),
+            Some("task-parent")
+        );
+    }
+
+    #[test]
     fn api_pane_move_only_pane_to_new_tab_uses_app_render_handles() {
         let mut app = app_with_linked_worktree();
         let source = app.state.workspaces[0].tabs[0].root_pane;

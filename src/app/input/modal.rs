@@ -339,6 +339,7 @@ impl App {
             name,
             kind: crate::detect::agent_label(kind).to_string(),
             pane_id: public_pane_id,
+            task_provenance: None,
             mode: crate::api::schema::AgentStartMode::Resume,
             args: Vec::new(),
             timeout_ms: None,

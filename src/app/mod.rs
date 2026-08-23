@@ -4739,6 +4739,7 @@ mod tests {
                 name: "worker".into(),
                 kind: "pi".into(),
                 pane_id,
+                task_provenance: None,
                 mode: Default::default(),
                 args: Vec::new(),
                 timeout_ms: Some(1_000),
@@ -4784,6 +4785,13 @@ mod tests {
             )
             .unwrap(),
         });
+        let provenance = crate::terminal::TaskProvenance {
+            task_id: "task-otter".into(),
+            parent_task_id: Some("task-parent".into()),
+            spawn_kind: "fork".into(),
+            generation: 3,
+        };
+        terminal.set_task_provenance(Some(provenance.clone()));
         let request_json = serde_json::json!({
             "id": "req_agent_resume",
             "method": "agent.start",
@@ -4807,6 +4815,10 @@ mod tests {
         assert_eq!(
             app.state.terminals[&terminal_id].managed_agent_generation(),
             Some(2)
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id].task_provenance(),
+            Some(&provenance)
         );
         assert_eq!(
             app.state.terminals[&terminal_id]
@@ -5070,6 +5082,12 @@ mod tests {
             .try_send_bytes(bytes::Bytes::from_static(b"occupied"))
             .unwrap();
         app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+        let provenance = crate::terminal::TaskProvenance {
+            task_id: "task-worker".into(),
+            parent_task_id: None,
+            spawn_kind: "root".into(),
+            generation: 1,
+        };
 
         let request = || crate::api::schema::Request {
             id: "req_agent_start_input".into(),
@@ -5077,6 +5095,7 @@ mod tests {
                 name: "worker".into(),
                 kind: "pi".into(),
                 pane_id: pane_id.clone(),
+                task_provenance: Some(provenance.clone()),
                 mode: Default::default(),
                 args: Vec::new(),
                 timeout_ms: Some(4_000),
@@ -5086,6 +5105,7 @@ mod tests {
         let response: serde_json::Value = serde_json::from_str(&response).unwrap();
         assert_eq!(response["error"]["code"], "agent_start_input_failed");
         assert_eq!(app.state.terminals[&terminal_id].agent_name, None);
+        assert_eq!(app.state.terminals[&terminal_id].task_provenance(), None);
         assert_eq!(
             app.state.terminals[&terminal_id].manual_label.as_deref(),
             Some("shell")
@@ -5101,6 +5121,10 @@ mod tests {
         assert_eq!(
             app.state.terminals[&terminal_id].agent_name.as_deref(),
             Some("worker")
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id].task_provenance(),
+            Some(&provenance)
         );
         let rename = app.handle_api_request(crate::api::schema::Request {
             id: "req_agent_rename_pending".into(),

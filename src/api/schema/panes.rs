@@ -479,6 +479,8 @@ pub struct PaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<AgentSessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_provenance: Option<crate::terminal::TaskProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<PaneScrollInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<PaneCursorInfo>,
