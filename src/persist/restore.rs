@@ -503,7 +503,9 @@ fn restore_tab(
                         managed.name.clone(),
                         crate::detect::parse_canonical_agent_label(&managed.kind)?,
                         managed.argv.clone(),
-                        managed.generation,
+                        // `generation` is `#[serde(default)]`, so a snapshot may omit
+                        // it; 0 is the no-managed-generation sentinel.
+                        managed.generation.max(1),
                         managed.lifecycle,
                     ))
                 })
@@ -514,9 +516,8 @@ fn restore_tab(
                             pane.managed_agent_kind.as_deref()?,
                         )?,
                         pane.launch_argv.clone().unwrap_or_default(),
-                        // Legacy snapshots predate generations; 0 is the "no managed
-                        // generation" sentinel, so start where a first launch would
-                        // or death events look stale and get dropped.
+                        // Legacy snapshots predate generations; start where a first
+                        // launch would or death events look stale and get dropped.
                         1,
                         crate::terminal::ManagedAgentLifecycle::Stopped,
                     ))
@@ -1313,6 +1314,80 @@ mod tests {
         assert_eq!(
             session.session_ref.value,
             test_session_path("pi-session.jsonl")
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_agent_snapshot_without_generation_never_restores_the_sentinel() {
+        let cwd = std::env::current_dir().unwrap();
+        // `generation` is `#[serde(default)]`, so the schema accepts this shape.
+        let managed: super::super::snapshot::ManagedAgentSnapshot =
+            serde_json::from_str(r#"{"name":"reviewer","kind":"pi","lifecycle":"stopped"}"#)
+                .expect("generation is optional");
+        assert_eq!(managed.generation, 0);
+
+        let snapshot = SessionSnapshot {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![WorkspaceSnapshot {
+                id: Some("workspace".into()),
+                custom_name: None,
+                identity_cwd: cwd.clone(),
+                worktree_space: None,
+                public_pane_numbers: HashMap::new(),
+                next_public_pane_number: 0,
+                public_tab_numbers: Vec::new(),
+                next_public_tab_number: 0,
+                tabs: vec![TabSnapshot {
+                    custom_name: None,
+                    layout: LayoutSnapshot::Pane(0),
+                    panes: HashMap::from([(
+                        0,
+                        super::super::snapshot::PaneSnapshot {
+                            cwd,
+                            label: None,
+                            agent_name: Some("reviewer".into()),
+                            managed_agent_kind: Some("pi".into()),
+                            managed_agent: Some(managed),
+                            agent_session: None,
+                            launch_argv: None,
+                        },
+                    )]),
+                    zoomed: false,
+                    focused: Some(0),
+                    root_pane: Some(0),
+                }],
+                active_tab: 0,
+            }],
+            active: Some(0),
+            selected: 0,
+            sidebar_width: None,
+            sidebar_section_split: None,
+            collapsed_space_keys: Default::default(),
+        };
+        let (events, _event_rx) = mpsc::channel(4);
+
+        let (_workspaces, terminals, _runtimes) = restore(
+            &snapshot,
+            None,
+            24,
+            80,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            true,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        );
+
+        let terminal = terminals
+            .values()
+            .next()
+            .expect("restored terminal should exist");
+        assert_ne!(
+            terminal.managed_agent_generation(),
+            Some(0),
+            "0 is the no-managed-generation sentinel; death events would look stale"
         );
     }
 

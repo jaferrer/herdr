@@ -2203,11 +2203,13 @@ impl TerminalState {
     }
 
     pub fn restore_managed_agent(&mut self, name: String, kind: Agent) {
+        // 0 is the no-managed-generation sentinel; a managed pane must never
+        // hold it or its death events are dropped as stale.
         self.restore_managed_agent_definition(
             name,
             kind,
             Vec::new(),
-            0,
+            1,
             ManagedAgentLifecycle::Running,
         );
     }
