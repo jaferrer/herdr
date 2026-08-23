@@ -1,6 +1,86 @@
 use super::harness::*;
 
 #[test]
+fn agent_start_sends_task_provenance() {
+    let base = unique_test_dir();
+    fs::create_dir_all(&base).unwrap();
+    let socket_path = base.join("herdr.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+
+    let server = thread::spawn(move || {
+        let (mut pane_stream, pane_line) = accept_fake_cli_operation(&listener);
+        let pane: serde_json::Value = serde_json::from_str(&pane_line).unwrap();
+        assert_eq!(pane["method"], "pane.get");
+        writeln!(
+            pane_stream,
+            "{}",
+            serde_json::json!({
+                "id": pane["id"],
+                "result": {
+                    "type": "pane_info",
+                    "pane": { "terminal_id": "term_1" }
+                }
+            })
+        )
+        .unwrap();
+        pane_stream.flush().unwrap();
+
+        let (mut start_stream, start_line) = accept_fake_cli_operation(&listener);
+        let start: serde_json::Value = serde_json::from_str(&start_line).unwrap();
+        assert_eq!(start["method"], "agent.start");
+        assert_eq!(
+            start["params"]["task_provenance"],
+            serde_json::json!({
+                "task_id": "task-child",
+                "parent_task_id": "task-parent",
+                "spawn_kind": "fork",
+                "generation": 7
+            })
+        );
+        writeln!(
+            start_stream,
+            "{}",
+            serde_json::json!({
+                "id": start["id"],
+                "error": { "code": "test_stop", "message": "stop" }
+            })
+        )
+        .unwrap();
+        start_stream.flush().unwrap();
+    });
+
+    let started = run_cli(
+        &socket_path,
+        &[
+            "agent",
+            "start",
+            "reviewer",
+            "--kind",
+            "pi",
+            "--pane",
+            "w1:p1",
+            "--task-id",
+            "task-child",
+            "--parent-task-id",
+            "task-parent",
+            "--spawn-kind",
+            "fork",
+            "--generation",
+            "7",
+        ],
+    );
+    assert_eq!(
+        started.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&started.stderr)
+    );
+
+    server.join().unwrap();
+    cleanup_test_base(&base);
+}
+
+#[test]
 fn agent_start_waits_through_unknown_then_rejects_blocked() {
     let base = unique_test_dir();
     fs::create_dir_all(&base).unwrap();

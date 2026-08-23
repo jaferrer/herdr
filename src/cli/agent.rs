@@ -274,7 +274,7 @@ fn matched_rule_region_preview<'a>(
 
 fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let Some(name) = args.first() else {
-        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--resume] [--timeout MS] [-- <agent-args...>]");
+        eprintln!("usage: herdr agent start <name> --kind KIND --pane ID [--resume] [--timeout MS] [--task-id ID --spawn-kind KIND --generation N [--parent-task-id ID]] [-- <agent-args...>]");
         return Ok(2);
     };
     let separator = args
@@ -284,6 +284,10 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
     let mut kind = None;
     let mut pane_id = None;
     let mut timeout_ms = None;
+    let mut task_id = None;
+    let mut parent_task_id = None;
+    let mut spawn_kind = None;
+    let mut generation = None;
     let mut mode = crate::api::schema::AgentStartMode::Start;
     let mut index = 1;
     while index < separator {
@@ -315,6 +319,44 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 };
                 index += 2;
             }
+            "--task-id" => {
+                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
+                    eprintln!("missing value for --task-id");
+                    return Ok(2);
+                };
+                task_id = Some(value.clone());
+                index += 2;
+            }
+            "--parent-task-id" => {
+                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
+                    eprintln!("missing value for --parent-task-id");
+                    return Ok(2);
+                };
+                parent_task_id = Some(value.clone());
+                index += 2;
+            }
+            "--spawn-kind" => {
+                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
+                    eprintln!("missing value for --spawn-kind");
+                    return Ok(2);
+                };
+                spawn_kind = Some(value.clone());
+                index += 2;
+            }
+            "--generation" => {
+                let Some(value) = args.get(index + 1).filter(|_| index + 1 < separator) else {
+                    eprintln!("missing value for --generation");
+                    return Ok(2);
+                };
+                generation = match super::parse_u64_flag("--generation", value) {
+                    Ok(generation) => Some(generation),
+                    Err(err) => {
+                        eprintln!("{err}");
+                        return Ok(2);
+                    }
+                };
+                index += 2;
+            }
             "--resume" => {
                 mode = crate::api::schema::AgentStartMode::Resume;
                 index += 1;
@@ -333,6 +375,14 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         eprintln!("missing required --pane");
         return Ok(2);
     };
+    let task_provenance =
+        match task_provenance_from_options(task_id, parent_task_id, spawn_kind, generation) {
+            Ok(task_provenance) => task_provenance,
+            Err(message) => {
+                eprintln!("{message}");
+                return Ok(2);
+            }
+        };
     let Some(expected_kind) = crate::detect::parse_agent_label(&kind) else {
         eprintln!("unsupported interactive agent kind: {kind}");
         return Ok(2);
@@ -366,7 +416,7 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
                 name: name.clone(),
                 kind: kind.clone(),
                 pane_id: pane_id.clone(),
-                task_provenance: None,
+                task_provenance: task_provenance.clone(),
                 mode,
                 args: agent_args.clone(),
                 timeout_ms,
@@ -425,6 +475,31 @@ fn agent_start(args: &[String]) -> std::io::Result<i32> {
         Err(err) => {
             print_agent_transport_error(err, "cli:agent:start", "agent_start_transport_failed")
         }
+    }
+}
+
+fn task_provenance_from_options(
+    task_id: Option<String>,
+    parent_task_id: Option<String>,
+    spawn_kind: Option<String>,
+    generation: Option<u64>,
+) -> Result<Option<crate::terminal::TaskProvenance>, &'static str> {
+    if parent_task_id.is_some() && task_id.is_none() {
+        return Err("--parent-task-id requires --task-id");
+    }
+    match (task_id, parent_task_id, spawn_kind, generation) {
+        (None, None, None, None) => Ok(None),
+        (Some(task_id), parent_task_id, Some(spawn_kind), Some(generation)) => {
+            Ok(Some(crate::terminal::TaskProvenance {
+                task_id,
+                parent_task_id,
+                spawn_kind,
+                generation,
+            }))
+        }
+        (None, _, _, _) => Err("--task-id is required when supplying task provenance"),
+        (_, _, None, _) => Err("--spawn-kind is required when supplying task provenance"),
+        (_, _, _, None) => Err("--generation is required when supplying task provenance"),
     }
 }
 
@@ -924,7 +999,7 @@ fn print_agent_help() {
     eprintln!("  herdr agent wait <target> [--until STATUS]... [--timeout MS]");
     eprintln!("  herdr agent attach <target> [--takeover]");
     eprintln!(
-        "  herdr agent start <name> --kind KIND --pane ID [--resume] [--timeout MS] [-- <agent-args...>]"
+        "  herdr agent start <name> --kind KIND --pane ID [--resume] [--timeout MS] [--task-id ID --spawn-kind KIND --generation N [--parent-task-id ID]] [-- <agent-args...>]"
     );
     eprintln!("  herdr agent explain <target> [--json|--format text|json] [--verbose]");
     eprintln!(
@@ -939,4 +1014,43 @@ fn parse_timeout(value: &str) -> Result<u64, i32> {
         eprintln!("{err}");
         2
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn task_provenance_options_support_root_and_absent_cases() {
+        assert_eq!(
+            super::task_provenance_from_options(None, None, None, None).unwrap(),
+            None
+        );
+        assert_eq!(
+            super::task_provenance_from_options(
+                Some("task-root".into()),
+                None,
+                Some("root".into()),
+                Some(0),
+            )
+            .unwrap(),
+            Some(crate::terminal::TaskProvenance {
+                task_id: "task-root".into(),
+                parent_task_id: None,
+                spawn_kind: "root".into(),
+                generation: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn task_provenance_parent_requires_task_id() {
+        assert_eq!(
+            super::task_provenance_from_options(
+                None,
+                Some("task-parent".into()),
+                Some("fork".into()),
+                Some(1),
+            ),
+            Err("--parent-task-id requires --task-id")
+        );
+    }
 }

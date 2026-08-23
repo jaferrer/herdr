@@ -455,6 +455,27 @@ fn agent_command() -> Command {
                     option("timeout", "MS")
                         .help("Wait for interactive readiness (default: 30000; max: 300000)"),
                 )
+                .arg(
+                    option("task-id", "ID")
+                        .requires_all(["spawn-kind", "generation"])
+                        .help("Conceptual task identity"),
+                )
+                .arg(
+                    option("parent-task-id", "ID")
+                        .requires("task-id")
+                        .help("Parent conceptual task identity; omit for a root task"),
+                )
+                .arg(
+                    option("spawn-kind", "KIND")
+                        .requires("task-id")
+                        .help("Conceptual task spawn relationship"),
+                )
+                .arg(
+                    option("generation", "N")
+                        .requires("task-id")
+                        .value_parser(clap::value_parser!(u64))
+                        .help("Conceptual task generation"),
+                )
                 .arg(flag("resume").help("Resume the stopped managed agent in this pane"))
                 .arg(
                     Arg::new("agent_args")
@@ -1326,6 +1347,12 @@ mod tests {
                 .map(str::to_string)
         );
         assert!(has_option(agent_start, "pane"));
+        for provenance in ["task-id", "parent-task-id", "spawn-kind", "generation"] {
+            assert!(
+                has_option(agent_start, provenance),
+                "missing provenance option --{provenance}"
+            );
+        }
         for legacy in ["cwd", "workspace", "tab", "split", "focus", "env", "argv"] {
             assert!(!has_option(agent_start, legacy), "legacy option --{legacy}");
         }
