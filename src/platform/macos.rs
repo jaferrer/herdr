@@ -265,7 +265,15 @@ fn target_nofile_soft_limit(
 }
 
 pub(crate) fn available_pane_shell(child_pid: u32) -> Option<String> {
-    super::available_pane_shell_from_job(child_pid, foreground_job(child_pid)?)
+    available_pane_shell_from_job(child_pid, foreground_job(child_pid)?)
+}
+
+fn available_pane_shell_from_job(child_pid: u32, mut job: ForegroundJob) -> Option<String> {
+    job.processes.retain(|process| {
+        process.pid == child_pid
+            || !(process.name == "path_helper" || super::is_pane_shell_process_name(&process.name))
+    });
+    super::available_pane_shell_from_job(child_pid, job)
 }
 
 /// Collect the foreground terminal job for a given child PID.
@@ -998,6 +1006,32 @@ pub fn process_exists(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn login_shell_bootstrap_does_not_make_a_fresh_shell_busy() {
+        let process = |pid: u32, name: &str| ForegroundProcess {
+            pid,
+            name: name.into(),
+            argv0: None,
+            argv: None,
+            cmdline: None,
+        };
+        let job = |child| ForegroundJob {
+            process_group_id: 42,
+            processes: vec![
+                process(42, "zsh"),
+                process(43, "zsh"),
+                process(44, "path_helper"),
+                process(45, child),
+            ],
+        };
+
+        assert_eq!(
+            available_pane_shell_from_job(42, job("zsh")),
+            Some("zsh".into())
+        );
+        assert_eq!(available_pane_shell_from_job(42, job("sleep")), None);
+    }
 
     #[test]
     fn nofile_target_raises_low_soft_limit_to_cap_when_hard_is_unlimited() {
