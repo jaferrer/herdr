@@ -4829,6 +4829,71 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_agent_start_resume_reuses_live_shell_runtime() {
+        let mut app = test_app();
+        let workspace = Workspace::test_new("agent-resume-live-shell");
+        let root = workspace.tabs[0].root_pane;
+        let terminal_id = workspace.terminal_id(root).cloned().unwrap();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        let pane_id = app.pane_info(0, root).unwrap().pane_id;
+        let session_path = std::env::temp_dir().join(format!(
+            "herdr-pi-live-shell-resume-{}-{}.jsonl",
+            std::process::id(),
+            root.raw()
+        ));
+        std::fs::write(&session_path, "{}\n").unwrap();
+        let terminal = app.state.terminals.get_mut(&terminal_id).unwrap();
+        terminal.restore_stopped_managed_agent(
+            "otter".into(),
+            crate::detect::Agent::Pi,
+            vec!["pi".into()],
+            3,
+        );
+        terminal.set_persisted_agent_session(crate::agent_resume::PersistedAgentSession {
+            source: "herdr:pi".into(),
+            agent: "pi".into(),
+            session_ref: crate::agent_resume::AgentSessionRef::path(
+                session_path.display().to_string(),
+            )
+            .unwrap(),
+        });
+        let (runtime, mut input) = TerminalRuntime::test_with_channel(80, 24);
+        app.terminal_runtimes.insert(terminal_id.clone(), runtime);
+
+        let response = app.handle_api_request(
+            serde_json::from_value(serde_json::json!({
+                "id": "req_agent_resume_live_shell",
+                "method": "agent.start",
+                "params": {
+                    "name": "otter",
+                    "kind": "pi",
+                    "pane_id": pane_id,
+                    "mode": "resume"
+                }
+            }))
+            .unwrap(),
+        );
+        let response: serde_json::Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(response["result"]["type"], "agent_started");
+        assert_eq!(
+            input.recv().await.unwrap(),
+            bytes::Bytes::from(format!("pi --session {}\r", session_path.display()))
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id].managed_agent_generation(),
+            Some(4)
+        );
+
+        for (_, runtime) in app.terminal_runtimes.drain() {
+            runtime.shutdown();
+        }
+        std::fs::remove_file(session_path).unwrap();
+    }
+
+    #[tokio::test]
     async fn navigator_enter_resumes_stopped_managed_pane() {
         let mut app = test_app();
         let workspace = Workspace::test_new("navigator-resume");

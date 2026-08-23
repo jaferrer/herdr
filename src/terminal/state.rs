@@ -2203,21 +2203,42 @@ impl TerminalState {
     }
 
     pub fn restore_managed_agent(&mut self, name: String, kind: Agent) {
+        self.restore_managed_agent_definition(
+            name,
+            kind,
+            Vec::new(),
+            0,
+            ManagedAgentLifecycle::Running,
+        );
+    }
+
+    pub fn restore_managed_agent_definition(
+        &mut self,
+        name: String,
+        kind: Agent,
+        argv: Vec<String>,
+        generation: u64,
+        lifecycle: ManagedAgentLifecycle,
+    ) {
         self.set_agent_name(name);
         self.agent_name_owner = Some(AgentNameOwner {
             agent_label: crate::detect::agent_label(kind).to_string(),
             session_ref: None,
         });
-        self.managed_agent = Some(ManagedAgent {
+        self.managed_agent = matches!(
+            lifecycle,
+            ManagedAgentLifecycle::Starting | ManagedAgentLifecycle::Running
+        )
+        .then_some(ManagedAgent {
             kind,
             phase: ManagedAgentPhase::Active,
         });
         self.managed_agent_definition = Some(ManagedAgentDefinition {
             name: self.agent_name.clone().unwrap_or_default(),
             kind,
-            argv: Vec::new(),
-            generation: 0,
-            lifecycle: ManagedAgentLifecycle::Running,
+            argv,
+            generation,
+            lifecycle,
         });
     }
 

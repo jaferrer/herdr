@@ -495,7 +495,7 @@ fn restore_tab(
         let saved_managed_agent = saved_pane
             .and_then(|pane| pane.managed_agent_kind.as_deref())
             .and_then(crate::detect::parse_canonical_agent_label);
-        let stopped_managed_agent = saved_pane.and_then(|pane| {
+        let saved_managed_agent_definition = saved_pane.and_then(|pane| {
             pane.managed_agent
                 .as_ref()
                 .and_then(|managed| {
@@ -504,6 +504,7 @@ fn restore_tab(
                         crate::detect::parse_canonical_agent_label(&managed.kind)?,
                         managed.argv.clone(),
                         managed.generation,
+                        managed.lifecycle,
                     ))
                 })
                 .or_else(|| {
@@ -514,6 +515,7 @@ fn restore_tab(
                         )?,
                         pane.launch_argv.clone().unwrap_or_default(),
                         0,
+                        crate::terminal::ManagedAgentLifecycle::Stopped,
                     ))
                 })
         });
@@ -551,7 +553,8 @@ fn restore_tab(
         let imported_runtime = old_pane_id.and_then(|old_id| imported_panes.remove(&old_id));
         let was_imported = imported_runtime.is_some();
         if !was_imported {
-            if let Some((name, kind, argv, generation)) = stopped_managed_agent {
+            if let Some((name, kind, argv, generation, _)) = saved_managed_agent_definition.clone()
+            {
                 let terminal_id = TerminalId::alloc();
                 let mut terminal = TerminalState::new(terminal_id.clone(), cwd.clone());
                 if let Some(label) = saved_label {
@@ -678,14 +681,24 @@ fn restore_tab(
                 if let Some(session) = restored_agent_session {
                     terminal.set_persisted_agent_session(session);
                 }
-                match (saved_agent_name, saved_managed_agent) {
-                    (Some(agent_name), Some(agent)) if was_imported => {
-                        terminal.restore_managed_agent(agent_name, agent)
+                if let Some((name, kind, argv, generation, lifecycle)) =
+                    saved_managed_agent_definition
+                {
+                    terminal
+                        .restore_managed_agent_definition(name, kind, argv, generation, lifecycle);
+                    runtime.set_managed_agent_generation(generation);
+                } else {
+                    match (saved_agent_name, saved_managed_agent) {
+                        (Some(agent_name), Some(agent)) if was_imported => {
+                            terminal.restore_managed_agent(agent_name, agent)
+                        }
+                        (Some(_), Some(_)) => {}
+                        (Some(agent_name), None) if was_imported => {
+                            terminal.set_agent_name(agent_name)
+                        }
+                        (Some(_), None) => {}
+                        (None, _) => {}
                     }
-                    (Some(_), Some(_)) => {}
-                    (Some(agent_name), None) if was_imported => terminal.set_agent_name(agent_name),
-                    (Some(_), None) => {}
-                    (None, _) => {}
                 }
                 if let Some(agent) = initial_restore_agent {
                     let _ = terminal.set_detected_state_with_screen_signals_at(
@@ -1632,6 +1645,88 @@ mod tests {
             handoff_runtimes.is_empty(),
             "handoff restore should not replace pending native agent resume with a shell runtime"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn handoff_restore_propagates_managed_agent_generation_to_runtime() {
+        let (mut snapshot, _) = snapshot_with_saved_pane_history();
+        let pane = snapshot.workspaces[0].tabs[0].panes.get_mut(&0).unwrap();
+        pane.agent_name = Some("otter".into());
+        pane.managed_agent_kind = Some("pi".into());
+        pane.managed_agent = Some(super::super::snapshot::ManagedAgentSnapshot {
+            name: "otter".into(),
+            kind: "pi".into(),
+            argv: vec!["pi".into(), "--provider".into(), "omniroute".into()],
+            generation: 7,
+            lifecycle: crate::terminal::ManagedAgentLifecycle::Running,
+        });
+        let pair = portable_pty::native_pty_system()
+            .openpty(portable_pty::PtySize {
+                rows: 24,
+                cols: 80,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .unwrap();
+        let master_fd = unsafe { libc::dup(pair.master.as_raw_fd().unwrap()) };
+        assert!(master_fd >= 0);
+        let mut imports = HashMap::from([(
+            0,
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd,
+                state: crate::handoff_runtime::HandoffRuntimeState {
+                    pane_id: 0,
+                    child_pid: 0,
+                    rows: 24,
+                    cols: 80,
+                    cell_width_px: 0,
+                    cell_height_px: 0,
+                    keyboard_protocol_flags: 0,
+                    keyboard_protocol_ansi: None,
+                    input_state: None,
+                    terminal_title: None,
+                    initial_history_ansi: None,
+                },
+            },
+        )]);
+        let (events, mut event_rx) = mpsc::channel(8);
+
+        let (_workspaces, terminals, mut runtimes) = restore_handoff(
+            &snapshot,
+            0,
+            test_restore_shell(),
+            crate::config::ShellModeConfig::NonLogin,
+            &mut imports,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+
+        let terminal = terminals.values().next().unwrap();
+        assert_eq!(terminal.managed_agent_generation(), Some(7));
+        assert_eq!(
+            terminal.managed_agent_argv(),
+            Some(
+                ["pi", "--provider", "omniroute"]
+                    .map(String::from)
+                    .as_slice()
+            )
+        );
+        runtimes.drain().next().unwrap().1.shutdown();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            AppEvent::PaneDied {
+                generation: Some(7),
+                ..
+            }
+        ));
+        drop(pair);
     }
 
     #[tokio::test]

@@ -2021,10 +2021,12 @@ impl PaneRuntime {
                 }
             });
             let exit_events = events.clone();
+            let managed_agent_generation = managed_agent_generation.clone();
             let on_reader_exit = Box::new(move || {
+                let generation = managed_agent_generation.load(Ordering::Acquire);
                 let _ = rt.block_on(exit_events.send(AppEvent::PaneDied {
                     pane_id,
-                    generation: None,
+                    generation: (generation > 0).then_some(generation),
                 }));
                 debug!(pane = pane_id.raw(), "handoff PTY actor exiting");
             });
@@ -3172,6 +3174,70 @@ impl PaneRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn handoff_runtime_death_reports_managed_agent_generation() {
+        use std::os::fd::{FromRawFd, OwnedFd};
+
+        let mut master_fd = -1;
+        let mut slave_fd = -1;
+        assert_eq!(
+            unsafe {
+                libc::openpty(
+                    &mut master_fd,
+                    &mut slave_fd,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            },
+            0
+        );
+        let slave = unsafe { OwnedFd::from_raw_fd(slave_fd) };
+        let (events, mut event_rx) = mpsc::channel(4);
+        let runtime = PaneRuntime::from_handoff_fd(
+            crate::handoff_runtime::ImportedHandoffRuntime {
+                master_fd,
+                state: crate::handoff_runtime::HandoffRuntimeState {
+                    pane_id: 41,
+                    child_pid: 0,
+                    rows: 24,
+                    cols: 80,
+                    cell_width_px: 0,
+                    cell_height_px: 0,
+                    keyboard_protocol_flags: 0,
+                    keyboard_protocol_ansi: None,
+                    input_state: None,
+                    terminal_title: None,
+                    initial_history_ansi: None,
+                },
+            },
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        runtime.set_managed_agent_generation(9);
+        runtime.set_handoff_reader_paused(false);
+
+        drop(slave);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event,
+            AppEvent::PaneDied {
+                generation: Some(9),
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn pane_launch_env_removes_outer_codex_thread_id() {

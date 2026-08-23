@@ -262,9 +262,6 @@ impl App {
             .and_then(|workspace| workspace.terminal_id(pane_id))
             .cloned()
             .ok_or_else(|| AgentStartError::TargetNotFound(params.pane_id.clone()))?;
-        if self.terminal_runtimes.get(&terminal_id).is_some() {
-            return Err(AgentStartError::TargetBusy(params.pane_id));
-        }
         let terminal = self
             .state
             .terminals
@@ -272,15 +269,19 @@ impl App {
             .ok_or_else(|| AgentStartError::TargetNotFound(params.pane_id.clone()))?;
         if terminal.managed_agent_name() != Some(params.name.as_str())
             || terminal.managed_agent_kind() != Some(kind)
-            || !matches!(
-                terminal.managed_agent_lifecycle(),
-                Some(
-                    crate::terminal::ManagedAgentLifecycle::Stopped
-                        | crate::terminal::ManagedAgentLifecycle::StartFailed
-                )
-            )
         {
             return Err(AgentStartError::DefinitionMismatch);
+        }
+        match terminal.managed_agent_lifecycle() {
+            Some(
+                crate::terminal::ManagedAgentLifecycle::Stopped
+                | crate::terminal::ManagedAgentLifecycle::StartFailed,
+            ) => {}
+            Some(
+                crate::terminal::ManagedAgentLifecycle::Starting
+                | crate::terminal::ManagedAgentLifecycle::Running,
+            ) => return Err(AgentStartError::TargetBusy(params.pane_id)),
+            None => return Err(AgentStartError::DefinitionMismatch),
         }
         let session = terminal
             .persisted_agent_session
@@ -325,6 +326,19 @@ impl App {
         if timeout <= AGENT_START_SETTLE_DELAY || timeout > MAX_AGENT_START_TIMEOUT {
             return Err(AgentStartError::InvalidTimeout);
         }
+        let live_shell_submission = self
+            .terminal_runtimes
+            .get(&terminal_id)
+            .map(|runtime| {
+                let shell_name = available_shell_name(runtime)
+                    .ok_or_else(|| AgentStartError::TargetBusy(params.pane_id.clone()))?;
+                let command = crate::platform::interactive_shell_command(&plan.argv, &shell_name)
+                    .ok_or(AgentStartError::InvalidArgument)?;
+                Ok(crate::app::api_helpers::encode_api_submission(
+                    runtime, &command,
+                ))
+            })
+            .transpose()?;
         let (rows, cols) = self
             .state
             .view
@@ -350,16 +364,26 @@ impl App {
         else {
             return Err(AgentStartError::ResumeFailed);
         };
-        if !self.start_pending_agent_resume(
-            pane_id,
-            terminal_id.clone(),
-            cwd,
-            plan.clone(),
-            rows,
-            cols,
-            true,
-            Some(generation),
-        ) {
+        let launched = if let Some(bytes) = live_shell_submission {
+            let runtime = self
+                .terminal_runtimes
+                .get(&terminal_id)
+                .expect("live shell runtime should remain available");
+            runtime.set_managed_agent_generation(generation);
+            runtime.try_send_bytes(Bytes::from(bytes)).is_ok()
+        } else {
+            self.start_pending_agent_resume(
+                pane_id,
+                terminal_id.clone(),
+                cwd,
+                plan.clone(),
+                rows,
+                cols,
+                true,
+                Some(generation),
+            )
+        };
+        if !launched {
             if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
                 terminal.report_managed_agent_lifecycle(
                     generation,

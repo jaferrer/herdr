@@ -269,9 +269,17 @@ pub(crate) fn available_pane_shell(child_pid: u32) -> Option<String> {
 }
 
 fn available_pane_shell_from_job(child_pid: u32, mut job: ForegroundJob) -> Option<String> {
+    let login_shell = job
+        .processes
+        .iter()
+        .find(|process| process.pid == child_pid)
+        .map(|process| super::normalized_process_name(&process.name));
     job.processes.retain(|process| {
         process.pid == child_pid
-            || !(process.name == "path_helper" || super::is_pane_shell_process_name(&process.name))
+            || !(process.name == "path_helper"
+                || login_shell
+                    .as_ref()
+                    .is_some_and(|shell| super::normalized_process_name(&process.name) == *shell))
     });
     super::available_pane_shell_from_job(child_pid, job)
 }
@@ -1031,6 +1039,33 @@ mod tests {
             Some("zsh".into())
         );
         assert_eq!(available_pane_shell_from_job(42, job("sleep")), None);
+        assert_eq!(
+            available_pane_shell_from_job(
+                42,
+                ForegroundJob {
+                    process_group_id: 42,
+                    processes: vec![process(42, "zsh"), process(43, "zsh")],
+                }
+            ),
+            Some("zsh".into())
+        );
+    }
+
+    #[test]
+    fn genuine_nested_shell_keeps_pane_busy() {
+        let process = |pid: u32, name: &str| ForegroundProcess {
+            pid,
+            name: name.into(),
+            argv0: None,
+            argv: None,
+            cmdline: None,
+        };
+        let job = ForegroundJob {
+            process_group_id: 42,
+            processes: vec![process(42, "zsh"), process(43, "pwsh")],
+        };
+
+        assert_eq!(available_pane_shell_from_job(42, job), None);
     }
 
     #[test]
